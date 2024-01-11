@@ -1,0 +1,2166 @@
+---
+title: "Final_Assignment_202320860"
+author: "202320860"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    toc_depth: 4
+---
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, include = FALSE)
+```
+
+My public Github repository for final assignment can be found [here](https://github.com/BBBecky0913/MY472_Final_assignment_Option2)
+
+# 1 Introduction
+
+## 1.1 Research Question
+
+In the United Kingdom, police powers to stop-and-search members of the public are currently regulated by various pieces of legislation. However, as a growing body of research documents shows that there still exists some bias in who experiences stop and search by the police, with most of them focusing on the **identity** of the targeted people, Which is included in my research.
+
+Expanding previous studies that focused on **who** tends to be stopped and searched by police officers, I particularly studied on **where** S&S concentrates and investigate the effect of **economic inequality**. Besides, owe to the UK Police Data, which provide a wealth of textual information related to **police priority，** extra attention was paid to how those potential criminal issues report influence stop-and-search of local police force.
+
+## 1.2 Research Area
+I chose London as my study area, using the latest S&S data in December 2023. There are many administrative or census boundaries in the UK, such as LSOA(Lower Layer Super Output Area) and LAD (Local Authority District), etc., their spatial data and lookup tables can be found on the from Office for National Statistics of UK. In the UK, **Lower Authority Districts** refer to a level of local government that is subordinate to larger administrative divisions such as counties or regions. After some attempts I finally chose to aggregate the S&S data into **LAD**, there are total 50 LADs in London which are suitable for modeling with the analytic method I chose.
+
+```{r include = FALSE}
+if(!require("tidyverse")) install.packages("tidyverse") 
+if(!require("magrittr")) install.packages("magrittr") 
+if(!require("lubridate")) install.packages("lubridate") 
+if(!require("dplyr")) install.packages("dplyr") 
+if(!require("stringr")) install.packages("stringr") 
+if(!require("quanteda")) install.packages("quanteda") 
+if(!require("tidyverse")) install.packages("tidyverse") 
+if(!require("sf")) install.packages("sf") 
+if(!require("RSQLite")) install.packages("RSQLite") 
+if(!require("RSelenium")) install.packages("RSelenium") 
+if(!require("netstat")) install.packages("netstat") 
+if(!require("quanteda.textplots")) install.packages("quanteda.textplots") 
+if(!require("httr")) install.packages("httr") 
+if(!require("jsonlite")) install.packages("jsonlite") 
+if(!require("quanteda.textstats")) install.packages("quanteda.textstats") 
+if(!require("ggplot2")) install.packages("ggplot2") 
+if(!require("ggrepel")) install.packages("ggrepel") 
+if(!require("cowplot")) install.packages("cowplot")
+if(!require("ggrepel")) install.packages("ggrepel") 
+if(!require("RColorBrewer")) install.packages("RColorBrewer") 
+if(!require("viridis")) install.packages("viridis") 
+if(!require("wesanderson")) install.packages("wesanderson") 
+if(!require("ggmap")) install.packages("ggmap") 
+if(!require("ggspatial")) install.packages("ggspatial") 
+if(!require("biscale")) install.packages("biscale") 
+if(!require("units")) install.packages("units") 
+if(!require("corrplot")) install.packages("corrplot") 
+if(!require("spgwr")) install.packages("spgwr") 
+if(!require("sp")) install.packages("sp") 
+if(!require("tmap")) install.packages("tmap") 
+if(!require("leaflet")) install.packages("leaflet") 
+if(!require("DT")) install.packages("DT") 
+if(!require("installr")) { install.packages("installr"); require("installr")} #load / install+load installr
+if(!require("scales")) install.packages("scales") 
+```
+
+```{r results='hide'}
+# - The Global packages I use in research.
+# data operations
+library(magrittr)
+library(tidyverse)
+library(dplyr, warn.conflicts = FALSE)
+options(dplyr.summarise.inform = FALSE)
+
+# texual analysis
+library(stringr)
+library(glue)
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textstats)
+
+# data format transformation
+library(lubridate)
+
+# database inquiry
+library(DBI)
+library(RSQLite)
+
+# web scraping
+library(httr)
+library(rvest)
+library(RSelenium)
+library(jsonlite)
+
+# spatial analysis
+library(sf)
+
+# data visualization
+library(ggplot2)
+library(cowplot)
+library(RColorBrewer)
+library(viridis)
+library(ggrepel)
+library(ggmap)
+library(ggspatial)
+library(DT)
+
+# local packages
+# library(biscale)
+# library(spgwr)
+# library(tmap)
+# library(leaflet)
+```
+
+# 2 Data Description
+
+My data are mainly from two sources: At [Home | data.police.uk](https://data.police.uk/) I used the official API to retrieve Stop-and-Search data (Hereinafter, it will be referred to as **S&S**) and all traceable neighborhood priority texts for the study area over the study period. At [Open Geography Portal (statistics.gov.uk)](https://geoportal.statistics.gov.uk/), I downloaded the 2021 UK Census Data and Index of Multiple Deprivation (IMD) data, as well as some of London's boundary data, and load them into R as csv and shapefile data, converting to tibble or data frame if performing analysis and calculation need. The structure of the final dataset mainly includes data frame, tibble, simple feature(sf), and document featured matrix (dfm).
+
+# 3 Analysis
+
+```{r}
+path_to_folder <- getwd()
+```
+
+## 3.1 Identity Prejudice
+
+### 3.1.1 Stop-and-Search Data Collection 
+
+- Gathering S&S Data from API
+
+- S&S Data Preprocessing
+
+I gathered S&S data in London during December 2023 from UK Police API. After cleaning the data into a tidy table, it contains information of date, location, personal identity and details of S&S.
+```{r}
+# This code is to get the Police force list first, searching by the Police Force Area(PFA) from API
+
+London_PFAs <- c("metropolitan", "city-of-london")
+
+# get the forces list in London. We can find that each Police Force Area(force_id in api json) corresponds to one police force(force_name)
+force_list <- httr::content(GET("https://data.police.uk/api/forces"), "parsed") %>% lapply(unlist)
+
+London_force_PFA <- data.frame()
+London_forces <- c()
+
+for (force in force_list){
+  if (force["id"] %in% London_PFAs){
+    force <- as.data.frame(t(force))
+    London_force_PFA <- rbind(London_force_PFA, force)
+  }
+}
+
+London_force_PFA
+```
+
+```{r eval=FALSE}
+# Then I gathered the S&S data by for loop the force list and given date (month and year).
+London_SS_tibble <- tibble()
+year_dates <- "2023-11"
+
+for (PFA in London_PFAs){
+  for (year_date in year_dates){
+    # get neighborhoods' urls during research period
+    SS_url <- sprintf("https://data.police.uk/api/stops-force?force=%s&date=%s", PFA, year_date)
+    SS_json <- SS_url %>% GET() %>%  httr::content("parsed")     # parse the content returned from our GET request
+    for (SS in SS_json){
+      SS <- SS %>% unlist() %>% t() %>% as_tibble()
+      SS$datetime  <-  ymd_hms(SS$datetime)
+      SS$PFA_name <- PFA
+      SS$force <- London_force_PFA[London_force_PFA$id == PFA, "name"]
+      London_SS_tibble <- bind_rows(London_SS_tibble, SS)  # bind_rows can combine two dfs with cols not exactly same
+    }
+  }
+}
+```
+
+```{r eval=FALSE}
+# This code is to remove na values (from 9303 rows to 6906 rows), rename and reorder the columns of the generated original tibble.
+# rename some cols
+London_SS_tibble <- London_SS_tibble %>%
+  rename(
+    street_id = location.street.id,
+    street_name = location.street.name,
+    longitude = location.longitude,
+    latitude = location.latitude,
+    outcome_object_id = outcome_object.id,
+    outcome_object_name = outcome_object.name,
+  )
+
+# delete those rows which have at least a NA value in these columns written below
+London_SS_tibble <- London_SS_tibble %>% 
+                    filter(!is.na(longitude),
+                           !is.na(latitude),
+                           !is.na(gender),
+                           !is.na(age_range),
+                           !is.na(self_defined_ethnicity),
+                           !is.na(officer_defined_ethnicity),
+                           !is.na(object_of_search),
+                           !is.na(outcome))
+
+# select and adjust the col sequence of tibble
+London_SS_tibble <- London_SS_tibble %>% select(datetime, gender, age_range,
+                                                self_defined_ethnicity,
+                                                officer_defined_ethnicity, 
+                                                longitude, latitude, 
+                                                object_of_search, outcome,
+                                                outcome_linked_to_object_of_search,
+                                                removal_of_more_than_outer_clothing,
+                                                street_id, street_name, force, PFA_name,
+                                                type, involved_person,                                                                       legislation)
+London_SS_tibble
+```
+
+```{r include=TRUE, echo = FALSE}
+# saveRDS(London_SS_tibble, "RDS_data/London_SS_tibble.rds")
+London_SS_tibble<- readRDS( "RDS_data/London_SS_tibble.rds")
+London_SS_tibble
+```
+
+```{r eval=FALSE}
+# Chart Plot Template  ① Bar Chart
+bar_plot <- function(data, x="", y, fill, 
+                     is_facet = FALSE, 
+                     viridis, is_discrete = TRUE,
+                     title, title_size, ylab,
+                     geom_text_size,
+                     legend_lab, legend_item = c(),legend_title_size,
+                     axis_title_size,
+                     axis_text_size){
+  
+  plot <- plot <- ggplot(data, aes(x = x, y = y, fill = fill)) +
+          geom_bar(stat = "identity") +
+          labs(fill = legend_lab) +  
+          scale_fill_viridis(option = viridis, direction = -1, discrete = is_discrete, begin = 0.4, end = 1) +
+          xlab("") +
+          ylab(ylab) + 
+          ggtitle(title)+
+          geom_text_repel(aes(label=y), vjust=1.6,
+                          color="grey2", size=geom_text_size, alpha = 0.8) +
+          theme(
+            plot.title = element_text(size = title_size, face ='bold', hjust =0.08, vjust = 1),
+            panel.background = element_blank(),
+            panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+            strip.background = element_blank(),
+            strip.text = element_text(size = 15, face ='bold'),
+            legend.title = element_text(size = legend_title_size, face ='bold'),
+            legend.text = element_text(size = 13),
+            legend.key.size = unit(1, "cm"),
+            legend.spacing.y = unit(0.3, "cm"),
+            axis.title.x = element_text(size = axis_title_size[1]), 
+            axis.title.y = element_text(size = axis_title_size[2]),  
+            axis.text.x = element_text(size = axis_text_size[1]),   
+            axis.text.y = element_text(size = axis_text_size[2]))
+  
+  if (is_facet == TRUE){
+    # facet_wrap
+    plot <- plot + facet_wrap(~ Var2, labeller = as_labeller(legend_item))
+  }
+  
+  return(plot)
+}
+```
+
+```{r eval=FALSE}
+# Chart Plot Template ② Pie Chart
+pie_plot <- function(data, viridis, legend_lab, legend_loc){
+  
+  # first calculate the new variables (e.g. proportion) for plotting
+  data <- data %>% 
+    mutate(prop = Freq / sum(Freq) *100,
+           prop_text = paste0(round(prop, 2), "%"),
+           ypos = cumsum(prop)- 0.5*prop)
+  
+  # then plot
+  plot <- ggplot(data, aes(x = "", y = Freq, fill = Var1)) +
+          coord_polar("y") +
+          # scale_fill_manual(values = palette) +
+          scale_fill_viridis(option = viridis, direction = -1, discrete = TRUE, begin = 0.4, end = 1) +
+          labs(fill = legend_lab) +  
+          geom_col(color = "white") +
+          geom_label_repel(aes(label = prop_text),
+                     color = "black",
+                     size = 7,
+                     label.size = 0.9,
+                     label.r = unit(0.3, "lines"),
+                     label.padding = unit(0.8, "lines"),  # Amount of padding around label
+                     position = position_stack(vjust = 0.5),
+                     show.legend = FALSE) +
+          theme_void() +
+          theme(plot.margin = margin(t = 1.5, r = -10, 
+                                     b = -0.8, l = -13.5, "cm"),
+                legend.title = element_text(size = 20, face ='bold'),
+                legend.text = element_text(size = 18),
+                legend.key.size = unit(1, "cm"),
+                legend.spacing.y = unit(0.3, "cm"), 
+                legend.position = legend_loc)
+  return(plot)
+}
+
+```
+### 3.1.2 Descriptive Statistics
+
+#### 1) Identity Structure
+
+##### ① Focus on the misjudged S&S
+
+This side-by-side stacked bar charts shows both compositions of searched objects and outcome. The searched objects reflect the crime type the violator is suspected, which can be further discussed later in the research. The outcomes show the final conviction and if there's **a no further action disposal**, it means that the police are more likely to misjudge or over oversearch without enough reasons due to some prejudice. 
+
+Therefore, I focus on the **misjudged S&S data**, which may help find the hidden bias after excluding certain groups of people with high crime rates.
+
+```{r}
+# Select the columns you want to study
+SS_col_names <- c("gender", "age_range", "self_defined_ethnicity", "officer_defined_ethnicity", "object_of_search", "outcome", "outcome_linked_to_object_of_search", "removal_of_more_than_outer_clothing", "legislation")
+
+SS_misjudgment <- London_SS_tibble %>% filter(outcome == "A no further action disposal")
+
+# calculate unique values and number of occurrences, then convert each variable list into a dataframe for plotting
+SS_col_counts_all_outcome <- London_SS_tibble[SS_col_names] %>% lapply(table) %>% lapply(data.frame)
+SS_col_counts <- SS_misjudgment[SS_col_names] %>% lapply(table) %>% lapply(data.frame)
+```
+
+```{r}
+object_of_search <- SS_col_counts$object_of_search
+
+outcome <- SS_col_counts_all_outcome$outcome
+
+# Same as above
+object_of_search <- object_of_search %>% 
+mutate(prop = round(Freq / sum(Freq) *100, 1)) %>% 
+arrange(desc(prop)) %>%
+mutate(Var1 = factor(Var1, levels = Var1))
+
+outcome <- outcome %>% 
+mutate(prop = round(Freq / sum(Freq) *100, 1)) %>% 
+arrange(desc(prop)) %>%
+mutate(Var1 = factor(Var1, levels = Var1))
+```
+
+```{r eval=FALSE, fig.width=18, fig.height=8.6}
+# stacked bar plot
+object_of_search_plot <- bar_plot(data = object_of_search,
+                                  y = object_of_search$prop, 
+                                  fill = object_of_search$Var1,
+                                  title = "", 
+                                  viridis = "mako",
+                                  ylab = "Proportion (%)",
+                                  title_size=19,
+                                  geom_text_size = 5,
+                                  legend_title_size = 16,
+                                  axis_title_size = c(16,16),
+                                  axis_text_size = c(12,12),
+                                  legend_lab = "Object of Search")
+
+outcome_plot <- bar_plot(data = outcome,
+                                  y = outcome$prop, 
+                                  fill = outcome$Var1,
+                                  title = "", 
+                                  viridis = "mako",
+                                  ylab = "Proportion (%)",
+                                  title_size=19,
+                                  geom_text_size = 5,
+                                  legend_title_size = 16,
+                                  axis_title_size = c(16,16),
+                                  axis_text_size = c(12,12),
+                                  legend_lab = "Outcome")
+
+S_S_plot <- plot_grid(object_of_search_plot, outcome_plot, nrow = 1)
+
+
+final_S_S_plot <- ggdraw() +
+              draw_plot(S_S_plot) +
+              draw_label("Stacked Bar Chart for Proportions of Object of Search and Outcome",
+                         fontface = 'bold', size = 22, x = 0.5,
+                         vjust = -17, hjust = 0.6)
+final_S_S_plot
+```
+
+```{r echo=FALSE, include=TRUE, fig.width=18, fig.height=8.6}
+# saveRDS(final_S_S_plot, "RDS_data/final_S_S_plot.rds")
+final_S_S_plot<- readRDS( "RDS_data/final_S_S_plot.rds")
+final_S_S_plot
+```
+
+##### ② Identity Structure Statistics
+- Calculating Proportion of different Identities
+
+- Plot Pie Chart and Stacked Bar Chart
+
+The pie chart shows the proportions of people with different identities under stop-and-search. From this we can see, males are far more likely to be under S&S than females. People in each age range that over 10 have a similar proportion in the Age groups in S&S, with those over 34 having the largest proportion. According to the ethnicity defined by officer, White people account for the largest proportion, followed by Black people and Asian People, but this may be because the total number of white people in the UK is the largest. 
+
+```{r eval=FALSE, fig.width=22, fig.height=6}
+gender_plot <- pie_plot(data = SS_col_counts$gender, 
+                        legend_lab = "Gender",
+                        viridis = "mako", 
+                        legend_loc = c(1.02, 0.25))
+
+age_range_plot <- pie_plot(data = SS_col_counts$age_range, 
+                           viridis = "mako", 
+                           legend_lab = "Age Range",
+                           legend_loc = c(1.06, 0.28))
+
+ethnicity_plot <- pie_plot(data = SS_col_counts$officer_defined_ethnicity,
+                           viridis = "mako", 
+                           legend_lab = "Ethnicity",
+                           legend_loc = c(1.02, 0.25))
+
+identity_plot <- plot_grid(gender_plot, age_range_plot, ethnicity_plot, nrow = 1)
+
+final_identity_plot <- ggdraw() + 
+              draw_plot(identity_plot) +
+              draw_label('Pie Charts for Proportions of People with Different Identities under Stop-and-search', 
+                         fontface = 'bold', size = 32, x = 0.5, 
+                         vjust = -7.5, hjust = 0.5)
+final_identity_plot
+```
+
+```{r echo=FALSE, include=TRUE, fig.width=22, fig.height=6}
+# saveRDS(final_identity_plot, "RDS_data/final_identity_plot.rds")
+final_identity_plot<- readRDS( "RDS_data/final_identity_plot.rds")
+final_identity_plot
+```
+
+```{r}
+# - Data preprocessing
+ethnicity_detail <- SS_col_counts$self_defined_ethnicity
+
+# Separate the major categories and subcategories in self_defined_ethnicity into two columns to facilitate facet drawing
+ethnicity_detail$Var2 <- unlist(lapply(ethnicity_detail$Var1, function(x) gsub("(^[^-]*)-[^-]*", "\\1", x))) %>% trimws()  # Remove leading and trailing spaces
+
+# Subclass
+ethnicity_detail$Var1 <- unlist(lapply(ethnicity_detail$Var1, function(x) gsub("^[^-]*-", "", x))) %>% trimws()
+```
+
+```{r}
+# first calculate the new variables (e.g. proportion) for plotting
+ethnicity_detail <- ethnicity_detail %>% 
+mutate(prop = round(Freq / sum(Freq) *100, 1)) %>% 
+# update factor levels of subclass according to the proportion in a descending order for following visualization (default is sorting by first letter)
+arrange(desc(prop)) %>%
+mutate(Var1 = factor(Var1, levels = Var1))
+```
+
+```{r eval=FALSE, fig.width=11, fig.height=7.5}
+# simplify the category names
+Ethnic_Class <- c("White" = "White related",
+                  "Asian/Asian British" = "Asian related",
+                  "Black/African/Caribbean/Black British" = "Black related",
+                  "Mixed/Multiple ethnic groups" = "Mixed/ Multiple",
+                  "Other ethnic group" = "Other group")
+
+# choose stacked bar 
+ethnicity_detail_plot <- bar_plot(data = ethnicity_detail,
+                                  y = ethnicity_detail$prop, fill = ethnicity_detail$Var1,
+                                  is_facet = TRUE,
+                                  viridis = "magma",
+                                  title = "Stacked Bar Chart for Proportions of Self-defined Ethnicity under Stop-and-search", 
+                                  ylab = "Proportion (%)",
+                                  title_size=19,
+                                  geom_text_size = 5,
+                                  legend_title_size = 14,
+                                  axis_title_size = c(16,16),
+                                  axis_text_size = c(12,12),
+                                  legend_lab = "Self-defined Ethnicity",
+                                  legend_item = Ethnic_Class)
+
+ethnicity_detail_plot
+```
+
+Similar but detailed information can be found in the Self-defined Ethnicity of People under S&S, where I plot the stacked bar chart with `facet_wrap()` divided by 5 ethnic groups.
+
+Considering with the potential features the violators most likely to have, and the proportion of the local population, the statistical results are in line with expectations.
+
+```{r echo=FALSE, include=TRUE, fig.width=11, fig.height=7.5}
+# saveRDS(ethnicity_detail_plot, "RDS_data/ethnicity_detail_plot.rds")
+ethnicity_detail_plot<- readRDS( "RDS_data/ethnicity_detail_plot.rds")
+ethnicity_detail_plot
+```
+
+#### 2) Identity Bias
+
+##### ① Import and Summarise 2021 UK Census Data 
+
+In order to reduce the influence of demographics on the identity structure under S&S, I collected UK Census data in 2021 and zoomed the data into London by limiting the LAD code to London's. Because the statistical aperture difference between different dataset, I also build a lookup to switch between different boundary ID.
+
+I summarised the age range, gender and ethnicity data of Census data according to the classification in S&S data as shown below.
+
+```{r}
+# current path
+path_to_folder_spatial <- paste0(getwd(), "/All_data/0_all_data/")
+
+Age_range_census <- read_csv(paste0(path_to_folder_spatial,"Age_5Bands.csv"))
+Ethnic_group_census <- read.csv(paste0(path_to_folder_spatial,'Ethnic_Group.csv'))
+Sex_census <- read.csv(paste0(path_to_folder_spatial,'Sex.csv'))
+```
+
+```{r}
+# download the LAD boundary data collected before
+London_LAD_sf_prj <- read_sf(paste0(path_to_folder_spatial,"London_LAD.shp"))
+# the original data has projected crs, convert projected crs to WGS 84
+London_LAD_sf <- st_transform(London_LAD_sf_prj, crs = 4326)
+# select variables needed
+London_LAD_sf <- London_LAD_sf %>% select(LAD21CD, LAD21NM, geometry)
+```
+
+```{r}
+London_LAD <- London_LAD_sf %>% st_drop_geometry() %>% dplyr::select(LAD21CD, LAD21NM)
+
+LSOA_LAD_lookup_London <- read_csv(paste0(path_to_folder_spatial,"LSOA_to_Local_Authority_District_(2022)_Lookup_for_England_and_Wales.csv")) %>% select(LSOA21CD, LSOA21NM, LAD22CD, LAD22NM) %>% inner_join(London_LAD, by = c("LAD22CD" = "LAD21CD"))
+
+LSOA_LAD_lookup_London
+```
+
+```{r}
+# Join by LAD id to get the Census data in London
+Age_range_London_lsoa <- left_join(LSOA_LAD_lookup_London, Age_range_census, by = c("LSOA21CD"= "geography code"))
+
+Ethnic_London_lsoa <- left_join(LSOA_LAD_lookup_London, Ethnic_group_census, by = c("LSOA21CD"= "geography.code"))
+
+Sex_London_lsoa <- left_join(LSOA_LAD_lookup_London, Sex_census, by = c("LSOA21CD"= "geography.code"))
+```
+
+```{r}
+# summarise by age bands
+Age_range_London_lsoa$Age_range_under_10  <- as_tibble(Age_range_London_lsoa) %>% 
+  select("Age: Aged 4 years and under", "Age: Aged 5 to 9 years") %>% rowSums()
+
+Age_range_London_lsoa$Age_range_10_19 <- as_tibble(Age_range_London_lsoa) %>% 
+  select("Age: Aged 10 to 14 years", "Age: Aged 15 to 19 years") %>% rowSums()
+
+Age_range_London_lsoa$Age_range_20_24 <- as_tibble(Age_range_London_lsoa) %>% 
+  select("Age: Aged 20 to 24 years") %>% rowSums()
+
+Age_range_London_lsoa$Age_range_25_34 <- as_tibble(Age_range_London_lsoa) %>% 
+  select("Age: Aged 25 to 29 years", "Age: Aged 30 to 34 years") %>% rowSums()
+
+Age_range_London_lsoa$Age_range_over_34 <- as_tibble(Age_range_London_lsoa) %>% 
+  select("Age: Aged 35 to 39 years", "Age: Aged 40 to 44 years",
+         "Age: Aged 45 to 49 years", "Age: Aged 50 to 54 years",
+         "Age: Aged 55 to 59 years", "Age: Aged 60 to 64 years",
+         "Age: Aged 65 to 69 years", "Age: Aged 70 to 74 years",
+         "Age: Aged 75 to 79 years", "Age: Aged 80 to 84 years",
+         "Age: Aged 85 years and over") %>% rowSums()
+
+# calculate the proportions of age range group by LAD
+Age_range_London_LAD <- Age_range_London_lsoa %>% group_by(LAD22CD) %>% 
+                         summarise(age_total = sum(`Age: Total`),
+                                under_10_prop = mean(Age_range_under_10/ `Age: Total`),
+                                # notice that there's a little difference in the divi 里要讲一下年龄区间不大对应，有一些误差
+                                `10-17_prop` = mean(Age_range_10_19/ `Age: Total`),  
+                                `18-24_prop` = mean(Age_range_20_24/ `Age: Total`),
+                                `25-34_prop` = mean(Age_range_25_34/ `Age: Total`),
+                                `over_34_prop` = mean(Age_range_over_34/ `Age: Total`)) %>% 
+                         select(LAD22CD, age_total, under_10_prop, `10-17_prop`, `18-24_prop`, `25-34_prop`, `over_34_prop`) 
+
+# summarise the overall mean proportions of age range
+Age_range_prop_all <-  Age_range_London_LAD %>% summarise(pop_all = sum(age_total),
+                                                `under 10` = mean(under_10_prop),
+                                                `10-17` = mean(`10-17_prop`),
+                                                `18-24` = mean(`18-24_prop`),
+                                                `25-34` = mean(`25-34_prop`),
+                                                `over 34` = mean(over_34_prop)) %>%
+                                    pivot_longer(cols = c("under 10","10-17","18-24","25-34","over 34"), 
+                                                 names_to = "Var1", 
+                                                 values_to = "prop")
+  
+# calculate the proportions of Ethnic_group group by LAD
+Ethnic_London_LAD <- Ethnic_London_lsoa %>% group_by(LAD22CD) %>% 
+            summarise(ethnic_total = sum(Ethnic.group..Total..All.usual.residents),
+                     Asian_prop = mean(Ethnic.group..Asian..Asian.British.or.Asian.Welsh / Ethnic.group..Total..All.usual.residents),
+                     Black_prop = mean(Ethnic.group..Black..Black.British..Black.Welsh..Caribbean.or.African / Ethnic.group..Total..All.usual.residents),
+                     White_prop = mean(Ethnic.group..White / Ethnic.group..Total..All.usual.residents),
+                     Mixed_prop = mean(Ethnic.group..Mixed.or.Multiple.ethnic.groups / Ethnic.group..Total..All.usual.residents),
+                     Other_prop = mean(Ethnic.group..Other.ethnic.group / Ethnic.group..Total..All.usual.residents)) %>% 
+  select(LAD22CD, ethnic_total, Asian_prop, Black_prop, White_prop, Mixed_prop, Other_prop)
+
+# summarise the overall mean proportion of Ethnic_group 
+Ethnic_prop_all <- Ethnic_London_LAD %>% summarise(pop_all = sum(ethnic_total),
+                                                Asian = mean(Asian_prop),
+                                                Black = mean(Black_prop),
+                                                White = mean(White_prop),
+                                                Mixed = mean(Mixed_prop),
+                                                Other = mean(Other_prop)) %>% 
+                                    pivot_longer(cols = c("Asian","Black","White","Mixed", "Other"), 
+                                                 names_to = "Var1", 
+                                                 values_to = "prop")
+
+# calculate the proportions of sex group by LAD
+Sex_London_LAD <- Sex_London_lsoa %>% group_by(LAD22CD) %>% 
+                   summarise(sex_total = sum(Sex..All.persons..measures..Value),
+                             Male_prop = mean(Sex..Male..measures..Value/ Sex..All.persons..measures..Value),
+                             Female_prop = mean(Sex..Female..measures..Value/ Sex..All.persons..measures..Value))%>% 
+   select(LAD22CD, sex_total, Male_prop, Female_prop)
+# summarise the overall mean proportion of sex
+Sex_prop_all <- Sex_London_LAD %>% summarise(pop_all = sum(sex_total),
+                                                Male = mean(Male_prop),
+                                                Female = mean(Female_prop)) %>% 
+                                    pivot_longer(cols = c("Male","Female"), 
+                                                 names_to = "Var1", 
+                                                 values_to = "prop")
+```
+
+```{r echo=FALSE, include=TRUE}
+# saveRDS(Age_range_London_LAD, "RDS_data/Age_range_London_LAD.rds")
+Age_range_London_LAD <- readRDS( "RDS_data/Age_range_London_LAD.rds")
+head(Age_range_London_LAD, n = 3L)
+# saveRDS(Age_range_prop_all, "RDS_data/Age_range_prop_all.rds")
+Age_range_prop_all <- readRDS( "RDS_data/Age_range_prop_all.rds")
+
+# saveRDS(Ethnic_London_LAD, "RDS_data/Ethnic_group_London_LAD.rds")
+Ethnic_London_LAD <- readRDS( "RDS_data/Ethnic_group_London_LAD.rds")
+head(Ethnic_London_LAD, n = 3L)
+# saveRDS(Ethnic_prop_all, "RDS_data/Ethnic_prop_all.rds")
+Ethnic_prop_all <- readRDS( "RDS_data/Ethnic_prop_all.rds")
+
+# saveRDS(Sex_London_LAD, "RDS_data/Sex_London_LAD.rds")
+Sex_London_LAD <- readRDS( "RDS_data/Sex_London_LAD.rds")
+head(Sex_London_LAD, n = 3L)
+# saveRDS(Sex_prop_all, "RDS_data/Sex_prop_all.rds")
+Sex_prop_all <- readRDS( "RDS_data/Sex_prop_all.rds")
+```
+
+##### ② Calculate Disproportionality in S&S
+
+**Disproportionality** is a term used to describe situations in which a particular group is over-represented or under-represented in police S&S practices compared to its proportion of the general population. A simple calculation method is **(proportion of specific group in S&S / proportion in total population)** - 1. So if this value is greater than 0, then the group is relatively overrepresented in S&S.
+
+The following charts show the disproportionality of sex group, age group and ethnicity group, indicating that male, young people around 18-24 and the black group and other group (which are very special or complex that hard to be defined) are the overrepresented group. **The findings in ethnic group is noticeable because finally the potential racial prejudice is discovered.**
+
+```{r paged.print=TRUE}
+Sex_prop_SS <- SS_col_counts$gender %>% 
+    mutate(prop = Freq / sum(Freq), Var1 = as.character(Var1)) 
+
+Age_range_prop_SS <- SS_col_counts$age_range %>% 
+    mutate(prop = Freq / sum(Freq), Var1 = as.character(Var1))
+
+Ethnic_prop_SS <- ethnicity_detail %>% group_by(Var2) %>% summarise(Freq = sum(Freq)) %>% 
+                   mutate(prop = Freq / sum(Freq),
+                          Var1 = c("Asian", "Black", "Mixed", "Other", "White"))
+
+Sex_disprop <- Sex_prop_SS %>% inner_join(Sex_prop_all, by = c("Var1" = "Var1")) %>% 
+                               mutate(Sex_disprop = round(prop.x/prop.y - 1,2)) %>% select(Var1, Sex_disprop) %>% 
+                               arrange(desc(Sex_disprop))
+
+Age_range_disprop <- Age_range_prop_SS %>% inner_join(Age_range_prop_all, by = c("Var1" = "Var1")) %>% 
+                               mutate(Age_range_disprop = round(prop.x/prop.y - 1,2)) %>% select(Var1, Age_range_disprop) %>% 
+                               arrange(desc(Age_range_prop_SS))
+
+Ethnic_disprop <- Ethnic_prop_SS %>% inner_join(Ethnic_prop_all, by = c("Var1" = "Var1")) %>% 
+                               mutate(Ethnic_disprop = round(prop.x/prop.y - 1,2)) %>% select(Var1, Ethnic_disprop) %>% 
+                               arrange(desc(Ethnic_disprop))
+```
+
+```{r eval=FALSE, fig.width=20, fig.height=8}
+
+Sex_disprop_bar <- bar_plot(data = Sex_disprop, x = Sex_disprop$Var1, 
+                            y = Sex_disprop$Sex_disprop, fill = Sex_disprop$Sex_disprop,
+                            viridis = "mako", is_discrete = FALSE,
+                            title = " ", title_size = 50, ylab = "Disproportionality",
+                            legend_lab = "Sex",
+                            legend_title_size = 25,
+                            geom_text_size = 6,
+                            axis_title_size = c(18,18),
+                            axis_text_size = c(22,22))
+
+Age_range_disprop_bar <- bar_plot(data = Age_range_disprop, x = Age_range_disprop$Var1, 
+                            y = Age_range_disprop$Age_range_disprop, fill = Age_range_disprop$Age_range_disprop,
+                            viridis = "mako", is_discrete = FALSE,
+                            title = " ", title_size = 50, ylab = "Disproportionality",
+                            legend_lab = "Age",
+                            legend_title_size = 25,
+                            geom_text_size = 6,
+                            axis_title_size = c(18,18),
+                            axis_text_size = c(20,20))
+
+Ethnic_disprop_bar <- bar_plot(data = Ethnic_disprop, x = Ethnic_disprop$Var1, 
+                            y = Ethnic_disprop$Ethnic_disprop, fill = Ethnic_disprop$Ethnic_disprop,
+                            viridis = "mako", is_discrete = FALSE,
+                            title = " ", title_size = 50, ylab = "Disproportionality",
+                            legend_lab = "Ethnicity",
+                            legend_title_size = 25,
+                            geom_text_size = 6,
+                            axis_title_size = c(18,18),
+                            axis_text_size = c(22,22))
+
+disprop_plot <- plot_grid(Sex_disprop_bar, Age_range_disprop_bar, Ethnic_disprop_bar, nrow = 1)
+
+final_disprop_plot <- ggdraw() + 
+              draw_plot(disprop_plot) +
+              draw_label('Different Identity Features Disproportionality in Stop-and-Search', 
+                         fontface = 'bold', size = 28, x = 0.5, 
+                         vjust = -12, hjust = 0.5)
+final_disprop_plot
+```
+
+```{r include=TRUE, echo = FALSE, fig.width=20, fig.height=8}
+# saveRDS(final_disprop_plot, "RDS_data/final_disprop_plot.rds")
+final_disprop_plot<- readRDS( "RDS_data/final_disprop_plot.rds")
+final_disprop_plot
+```
+
+### 3.1.3 Correlation Analysis
+
+ - Data spacial matching into each LAD
+ 
+ - Calculate the S&S rate in each LAD 
+ 
+ - Calculate the correlation coefficient
+
+**In the discussion above we found that police S&S has biases against certain specific groups, then will the identity structure in a region affect the rate of misjudged S&S?**
+
+Here I aggregated the Census data and S&S data by LAD ID matching and spatial matching and obtain the summary table `London_LAD_ sf`. **Then I selected the proportion of gender, age, and ethnicity variables in the total population in each area for correlation with misjudged Stop-and-Search incidents per 10,000 people. **
+
+```{r}
+# 将 convert London_SS_tibble to simple feature
+London_SS_tibble$longitude <- as.numeric(London_SS_tibble$longitude)
+London_SS_tibble$latitude <- as.numeric(London_SS_tibble$latitude)
+London_SS_df <- as.data.frame(London_SS_tibble)
+London_SS_sf <- st_as_sf(London_SS_df, coords = c("longitude", "latitude"), 
+                         crs = st_crs(4326))
+
+# add the coordinates into sf dataframe
+coords <- st_coordinates(London_SS_sf)
+London_SS_sf$longitude <- coords[, 'X']
+London_SS_sf$latitude <- coords[, 'Y'] 
+```
+
+```{r eval=FALSE}
+London_LAD_sf_1 <- London_LAD_sf %>% st_join(London_SS_sf, left = FALSE) %>% group_by(LAD21CD) %>%
+              summarize(SS_count = n())
+
+# for loop the LAD id of London_LAD_sf, if the id of S&S point is inside, create first time and update the specific column every time. Otherwise update the value with 0.
+  for (LAD in London_LAD_sf$LAD21CD){
+    if (LAD %in% London_LAD_sf_1$LAD21CD){
+      London_LAD_sf[London_LAD_sf$LAD21CD == LAD, 
+                              "SS_count"] <- 
+        London_LAD_sf_1[London_LAD_sf_1$LAD21CD == LAD, "SS_count"][[1]]
+    }
+    else{London_LAD_sf[London_LAD_sf$LAD21CD == LAD, 
+                                 "SS_count"] <- 0}
+  }
+
+```
+
+```{r eval=FALSE}
+# Join the Census data into spatial statistics unit
+London_LAD_sf <- London_LAD_sf %>% 
+                  left_join(Ethnic_London_LAD, by = c("LAD21CD"= "LAD22CD")) %>% 
+                  left_join(Age_range_London_LAD, by = c("LAD21CD"= "LAD22CD")) %>% 
+                  left_join(Sex_London_LAD, by = c("LAD21CD"= "LAD22CD"))
+```
+
+```{r}
+library(units)
+```
+
+```{r eval=FALSE}
+Pop_density_census <- read_csv(paste0(path_to_folder_spatial,"Pop_Density.csv"))
+
+Pop_density_census <- Pop_density_census %>% rename(Pop_density = `Population Density: Persons per square kilometre; measures: Value`) %>% 
+                                                    select(`geography code`, Pop_density)
+
+# Join by LAD id to get the population density data in London
+Pop_density_London_lsoa <- left_join(LSOA_LAD_lookup_London, Pop_density_census, by = c("LSOA21CD"= "geography code"))
+
+# calculate the proportions of age range group by LAD
+Pop_density_London_LAD <- Pop_density_London_lsoa %>% group_by(LAD22CD) %>% 
+                         summarise(Pop_density = mean(Pop_density)) %>% 
+                         select(LAD22CD, Pop_density) 
+
+
+London_LAD_sf <- London_LAD_sf %>% left_join(Pop_density_London_LAD, by = c("LAD21CD"= "LAD22CD"))
+
+# convert WGS 84 to projected crs to calculate each LAD's area
+London_LAD_sf <- st_transform(London_LAD_sf, crs = st_crs(London_LAD_sf_prj))
+
+# calculate the area for each state, convert to km^2 unit, convert to the geographic crs for ploting
+London_LAD_sf$area <- st_area(London_LAD_sf) %>% set_units(km^2) 
+London_LAD_sf <- st_transform(London_LAD_sf, crs =4326)
+# calculate population or each LAD and stop-and-Search incidents per 10,000 people
+London_LAD_sf<- London_LAD_sf %>% mutate(area = as.numeric(units::drop_units(area)),
+                                           Population = Pop_density * area,
+                                           S_S_prop = SS_count / Population * 10000)
+```
+
+```{r echo=FALSE, paged.print=TRUE, include=TRUE}
+# saveRDS(London_LAD_sf, "RDS_data/London_LAD_sf.rds")
+London_LAD_sf <- readRDS( "RDS_data/London_LAD_sf.rds")
+head(London_LAD_sf, n =3L)
+names(London_LAD_sf)
+```
+
+```{r}
+library(corrplot)
+```
+
+The following graph shows the correlations between the 12 variables, with blue being the positive relationship and red the opposite, Indicating that age group is highly related to the S&S rate, where the lower proportion of the group aged under 17, the higher proportion of the group aged 18 to 34, the higher rate of S&S in local, which makes sense because drugs, violence, theft, etc.
+are more likely to occur on the **young adult**. In the Ethnic group, only the higher proportion of **the white group**, the lower rate of S$S in local, and higher proportions of all other groups will increase the region's overall S&S to some extent.
+
+```{r include=TRUE, echo = FALSE, fig.width=9, fig.height=8}
+selected_vars <- London_LAD_sf %>% st_drop_geometry() %>% dplyr::select(contains("prop")) %>% 
+  # delete Female_prop which is collinear with Male_prop
+  dplyr::select(-Female_prop) 
+
+corrplot(cor(selected_vars), method = "square", diag = FALSE, tl.col = "black")
+```
+
+## 3.2 Spatial Inequality
+
+### 3.2.1 Spatial Data Visualization
+
+- Plot London basemap using stadiamaps API
+
+- Plot Stop-and-Search Heatmap
+
+The heatmap shows that the stop-and-search concentrate spatially in the central part of London with the northeast part of it having higher S&S density.
+```{r eval=FALSE}
+# - Create bounding box according to the Greater London boundary
+# get the key
+APIKey <-  "fb69e364-41da-4456-89d6-e775f32a8076"
+register_stadiamaps(key = APIKey, write = TRUE)
+
+London_plot_bbox <- st_bbox(London_LAD_sf)
+names(London_plot_bbox) <- c("left", "bottom", "right", "top")
+
+basemap_London <- get_stadiamap(London_plot_bbox, maptype = "stamen_toner_lite", 
+                                source = "stadia", zoom = 12)
+basemap_London <- ggmap(basemap_London) +
+                       theme(line = element_blank(),
+                             rect = element_blank(),
+                             axis.title=element_blank(),
+                             axis.text=element_blank())
+                 
+London_basemap_plot<- ggplot() +
+                      annotation_custom(ggplotGrob(basemap_London), 
+                                xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+                      theme(rect = element_blank())
+
+London_basemap_plot
+```
+
+```{r echo=FALSE}
+# saveRDS(London_plot_bbox, "RDS_data/London_plot_bbox.rds")
+London_plot_bbox <- readRDS( "RDS_data/London_plot_bbox.rds")
+
+# saveRDS(London_basemap_plot, "RDS_data/London_basemap_plot.rds")
+London_basemap_plot <- readRDS( "RDS_data/London_basemap_plot.rds")
+```
+
+```{r fig.height=12, fig.width=15, include=TRUE, echo = FALSE}
+
+# 2D kernel density estimates were calculated using the stat_density2d() function in ggplot2, which automatically selects the bandwidth based on the standard deviation of the data and the number of data points.
+
+SS_heatmap <- ggplot() +
+  annotation_custom(ggplotGrob(London_basemap_plot), 
+                    xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=Inf) +
+  labs(x ='', y ='', title = "Stop-and-search Records Heatmap in London") + 
+  geom_sf(data = London_LAD_sf, color = "black", 
+          fill = NA, alpha = 0.7, size = 2) +
+  stat_density2d(data = London_SS_sf, aes(x=longitude, y=latitude,
+                 fill=after_stat(level), alpha=after_stat(level)),
+                 geom="polygon", adjust = 2) +  # adjust: bandwidth_size
+  scale_alpha_continuous(range=c(0.25,0.65)) +
+  scale_fill_gradientn(colours=rev(brewer.pal(7, "Spectral"))) +
+  geom_sf(data = London_SS_sf, color = '#161a30', size = 1.8, alpha = 0.15) +
+  guides(fill=guide_legend("S&S Density"), alpha = "none") +
+  coord_sf(xlim = London_plot_bbox[c(1,3)], ylim = London_plot_bbox[c(2,4)]) +
+  theme(plot.title = element_text(size =35, hjust = 0.5, vjust = 1, face = "bold"),
+        plot.margin = margin(t = 0.6, r = -12, 
+                             b = 0, l = -12.5, "cm"),
+        legend.title = element_text(size = 25, face ='bold'),
+        legend.position = c(0.9, 0.2),
+        legend.key.size = unit(1.2, "cm"),
+        legend.text = element_text(size = 22),
+        legend.margin = margin(0, 2, 0, 2, "cm"),
+        line = element_blank(), 
+        rect = element_blank(), 
+        axis.text=element_blank(),
+        axis.title=element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+        annotation_scale(location = "bl", line_width = 0.28,
+                         pad_x = unit(0.025, "npc"), pad_y = unit(0.03, "npc"), 
+                         height = unit(0.35, "cm"), text_cex = 2) + 
+        annotation_north_arrow(location = "bl", which_north = "true", 
+                               pad_x = unit(0.08, "npc"), pad_y = unit(0.08, "npc"),
+                               height = unit(2.5, "cm"), width = unit(2, "cm")) 
+
+SS_heatmap
+```
+
+```{r eval=FALSE, fig.height=12, fig.width=15}
+# saveRDS(SS_heatmap, "RDS_data/SS_heatmap.rds")
+SS_heatmap <- readRDS( "RDS_data/SS_heatmap.rds")
+SS_heatmap
+```
+
+### 3.2.2 Spatial Inequality Measurement
+
+**The Indices of Multiple Deprivation (IMD)** in 2019 provide a set of relative measures of deprivation for small areas (Lower-layer Super Output Areas, LSOA) across England, based on seven domains of deprivation: **Income** , **Employment**, **Education**, **Health**, **Crime**, **Housing Services**, **Living Environment**. According to related literature，some social disorganization indicators, which are intrinsically related to economic inequality, also predict variation in police behavior. 
+
+So I download the IMD indices and add them as complement of current identity variables to better understand the Police S&S practices. What shown below is the final tibble with all of variables involved in this research.
+
+```{r eval=FALSE}
+IMD_2019 <- read_csv(paste0(path_to_folder_spatial,"IMD_scores.csv")) %>% 
+  rename(LSOA21CD = `LSOA code (2011)`,
+         LAD19CD = `Local Authority District code (2019)`,
+         Income_IMD = `Income Score (rate)`,
+         Employ_IMD = `Employment Score (rate)`,
+         Education_IMD = `Education, Skills and Training Score`,
+         Health_IMD = `Health Deprivation and Disability Score`,
+         Crime_IMD = `Crime Score`,
+         Housing_IMD = `Barriers to Housing and Services Score`,
+         Living_IMD = `Living Environment Score`) %>% 
+  select(LSOA21CD, LAD19CD, Income_IMD, Employ_IMD, Education_IMD, Health_IMD, Crime_IMD, Housing_IMD, Living_IMD) %>% group_by(LAD19CD) %>% summarise(Income_IMD = mean(Income_IMD), Employ_IMD = mean(Employ_IMD),                                                      Education_IMD = mean(Education_IMD), Health_IMD = mean(Health_IMD),
+                                    Crime_IMD = mean(Crime_IMD), Housing_IMD = mean(Housing_IMD),
+                                    Living_IMD = mean(Living_IMD))
+
+#  join by LAD to get the Census data in London
+London_LAD_sf <- left_join(London_LAD_sf, IMD_2019, by = c("LAD21CD"= "LAD19CD"))
+
+names(London_LAD_sf)
+```
+
+```{r echo=FALSE, include=TRUE, paged.print=TRUE}
+# saveRDS(London_LAD_sf, "RDS_data/London_LAD_sf1.rds")
+London_LAD_sf <- readRDS( "RDS_data/London_LAD_sf1.rds")
+as_tibble(London_LAD_sf)
+# datatable(London_LAD_sf, options = list(pageLength = 10))
+names(London_LAD_sf)
+```
+
+The following map illustrates the spatial inequality distribution in London, showing that in each domain of deprivation, there is a significant spatial heterogeneity.
+
+```{r echo=FALSE, include=TRUE}
+London_LAD_sf_plot <- London_LAD_sf %>% select(SS_count, S_S_prop, Income_IMD, Employ_IMD, Education_IMD, Health_IMD, Crime_IMD, Housing_IMD, Living_IMD)
+London_LAD_plot <- plot(London_LAD_sf_plot, pal = brewer.pal(12, "Set3"), max.plot = 9)
+```
+
+### 3.2.3 Regression Analysis and Comparison
+
+#### 1) Multiple Linear Regression
+
+- Compare Model Fitting
+
+- Compare Regression Coefficients
+
+Here I compared the result of regression model using identity features as variables and using identity features and spatial inequality index.
+
+According to the results, The second model shows an **improvement** over the first model in terms of fit and explanatory power, particularly in the detailed impact of various aspects of the Index of Multiple Deprivation on the rate of S&S. This might be due to the second model including more **explanatory variables**, which help capture other important factors influencing dependent variable.
+
+```{r include = TRUE, echo = FALSE}
+# delete two variables which
+selected_vars <- selected_vars %>% select(-Other_prop, -over_34_prop)
+
+selected_add_inequality_vars <- London_LAD_sf %>% st_drop_geometry() %>%   
+  dplyr::select(contains("prop"), contains("IMD")) %>% 
+  dplyr::select(-Female_prop, -Other_prop, -over_34_prop)
+
+# use lm() to conduct OLS regression analysis
+model_1 <- lm(S_S_prop ~ ., data = selected_vars)
+model_2 <- lm(S_S_prop ~ ., data = selected_add_inequality_vars)
+
+# View summary of regression results
+summary(model_1)
+summary(model_2)
+```
+
+```{r}
+# Chart Plot Template  ① Bar Chart
+bar_plot <- function(data, x="", y, fill, 
+                     is_facet = FALSE, 
+                     viridis, is_discrete = TRUE,
+                     title, title_size, ylab,
+                     geom_text_size,
+                     legend_lab, legend_item = c(),legend_title_size,
+                     axis_title_size,
+                     axis_text_size){
+  
+  plot <- plot <- ggplot(data, aes(x = x, y = y, fill = fill)) +
+          geom_bar(stat = "identity") +
+          labs(fill = legend_lab) +  
+          scale_fill_viridis(option = viridis, direction = -1, discrete = is_discrete, begin = 0.4, end = 1) +
+          xlab("") +
+          ylab(ylab) + 
+          ggtitle(title)+
+          geom_text_repel(aes(label=y), vjust=1.6,
+                          color="grey2", size=geom_text_size, alpha = 0.8) +
+          theme(
+            plot.title = element_text(size = title_size, face ='bold', hjust =0.08, vjust = 1),
+            panel.background = element_blank(),
+            panel.border = element_rect(colour = "black", fill = NA, linewidth = 0.5),
+            strip.background = element_blank(),
+            strip.text = element_text(size = 15, face ='bold'),
+            legend.title = element_text(size = legend_title_size, face ='bold'),
+            legend.text = element_text(size = 13),
+            legend.key.size = unit(1, "cm"),
+            legend.spacing.y = unit(0.3, "cm"),
+            axis.title.x = element_text(size = axis_title_size[1]), 
+            axis.title.y = element_text(size = axis_title_size[2]),  
+            axis.text.x = element_text(size = axis_text_size[1]),   
+            axis.text.y = element_text(size = axis_text_size[2]))
+  
+  if (is_facet == TRUE){
+    # facet_wrap
+    plot <- plot + facet_wrap(~ Var2, labeller = as_labeller(legend_item))
+  }
+  
+  return(plot)
+}
+```
+
+The figure below presents a comparison of the **regression coefficients** of each variable in the two models. The explanatory power of the new variables `Employment_ID` and `Income_ID` in model 2 has replaced the original `Male_prop`.
+
+```{r echo = FALSE, include = TRUE, fig.width=30, fig.height=16}
+# extract the coefficients of regression models
+coeff1 <- model_1 %>% coef() 
+cof_names <- names(coeff1)
+coeff1 <- as_tibble(coeff1)
+coeff1 <- cbind(coeff1, cof_names)
+coeff1 <- coeff1[-1,]
+
+coeff2 <- model_2 %>% coef() 
+cof_names <- names(coeff2)
+coeff2 <- as_tibble(coeff2)
+coeff2 <- cbind(coeff2, cof_names)
+coeff2 <- coeff2[-1,]
+
+coeff1_bar_plot <- bar_plot(data = coeff1, x = coeff1$cof_names, 
+                            y = coeff1$value, fill = coeff1$value,
+                            viridis = "magma", is_discrete = FALSE,
+                            title = " coefficients of model1", title_size = 50, ylab = "Disproportionality",
+                            legend_lab = "Value",
+                            legend_title_size = 22,
+                            geom_text_size = 8,
+                            axis_title_size = c(25,25),
+                            axis_text_size = c(22,22))
+
+coeff2_bar_plot <- bar_plot(data = coeff2, x = coeff2$cof_names, 
+                            y = coeff2$value, fill = coeff2$value,
+                            viridis = "magma", is_discrete = FALSE,
+                            title = " coefficients of model2", title_size = 50, ylab = "Disproportionality",
+                            legend_lab = "Value",
+                            legend_title_size = 22,
+                            geom_text_size = 8,
+                            axis_title_size = c(25,25),
+                            axis_text_size = c(22,22))
+
+coeff_plot <- plot_grid(coeff1_bar_plot, coeff2_bar_plot, nrow = 2)
+coeff_plot
+```
+
+```{r eval=FALSE}
+# saveRDS(coeff_plot, "RDS_data/coeff_plot.rds")
+coeff_plot <- readRDS( "RDS_data/coeff_plot.rds")
+coeff_plot
+```
+
+
+#### 2) Geographically Weighted Regression
+
+**Geographically Weighted Regression (GWR)** is a technique used in spatial data analysis that allow regression coefficients to vary across space. This differs from OLS linear regression, which assumes that relationships are constant across the entire study area. Therefore, I use GWR to investigate the local differences on those factors' influence.
+
+```{r eval=FALSE}
+# select targeted vars and join it to one spatial data
+London_LAD_sf_prj_selected <- London_LAD_sf_prj %>% dplyr::select(LAD21CD, LAD21NM)
+
+vars_to_be_connected <- London_LAD_sf %>% st_drop_geometry() %>% dplyr::select(LAD21CD, contains("prop"), contains("IMD")) %>%
+                  dplyr::select(-Female_prop, -Other_prop, -over_34_prop)
+
+London_LAD_sf_prj_selected <- London_LAD_sf_prj_selected %>% 
+                  left_join(vars_to_be_connected, by = c("LAD21CD"= "LAD21CD"))
+
+# remove the na value row from Buckinghamshire which has no IMD index
+London_LAD_sf_prj_selected <- London_LAD_sf_prj_selected %>% filter(!rowSums(is.na(.)))
+
+# convert sf object to spatial object
+London_LAD_spatial <- as(London_LAD_sf_prj_selected, "Spatial")
+```
+
+```{r echo=FALSE}
+# saveRDS(London_LAD_spatial, "RDS_data/London_LAD_spatial.rds")
+London_LAD_spatial <- readRDS( "RDS_data/London_LAD_spatial.rds")
+```
+
+```{r eval=FALSE}
+library(spgwr)
+library(sp)
+```
+
+The modeling steps are as follows.
+```{r eval=FALSE, include=TRUE}
+# define formula
+formula <- S_S_prop ~ Asian_prop + Black_prop + White_prop + Mixed_prop + 
+                      under_10_prop + X10.17_prop + X18.24_prop + X25.34_prop +
+                      Male_prop +
+                      Income_IMD + Employ_IMD + Education_IMD + Health_IMD + Crime_IMD + Housing_IMD + Living_IMD
+
+# automatic bandwidth selection
+bw <- gwr.sel(formula, data = London_LAD_spatial, method = "AIC")
+
+# gwr model fitting
+gwr_model <- gwr(formula, data = London_LAD_spatial, bandwidth = bw, hatmatrix = TRUE)
+
+```
+
+```{r}
+# saveRDS(gwr_model, "RDS_data/gwr_model.rds")
+gwr_model <- readRDS( "RDS_data/gwr_model.rds")
+print(gwr_model)
+```
+
+```{r}
+# Extract regression coefficients
+SS_gwr_coef <- gwr_model$SDF %>% st_as_sf() %>% st_transform(crs = 4326)
+head(names(SS_gwr_coef), n =18L)
+```
+
+```{r}
+# Create multiple sf data for plotting the coefficient distribution of each variable
+  # Indentity Structure
+Asian_prop <- SS_gwr_coef %>% select(Asian_prop)
+Black_prop <- SS_gwr_coef %>% select(Black_prop)
+White_prop <- SS_gwr_coef %>% select(White_prop)
+Mixed_prop <- SS_gwr_coef %>% select(Mixed_prop)
+under_10_prop <- SS_gwr_coef %>% select(under_10_prop)
+X10.17_prop <- SS_gwr_coef %>% select(X10.17_prop)
+X18.24_prop <- SS_gwr_coef %>% select(X18.24_prop)
+X25.34_prop <- SS_gwr_coef %>% select(X25.34_prop)
+Male_prop <- SS_gwr_coef %>% select(Male_prop)
+
+  # Spatial Inequality
+Income_IMD <- SS_gwr_coef %>% select(Income_IMD)
+Employ_IMD <- SS_gwr_coef %>% select(Employ_IMD)
+Education_IMD <- SS_gwr_coef %>% select(Education_IMD)
+Health_IMD <- SS_gwr_coef %>% select(Health_IMD)
+Crime_IMD <- SS_gwr_coef %>% select(Crime_IMD)
+Housing_IMD <- SS_gwr_coef %>% select(Housing_IMD)
+Living_IMD <- SS_gwr_coef %>% select(Living_IMD)
+```
+
+```{r}
+# obtain the centroid of each LAD boundary
+London_LAD_point <- st_centroid(London_LAD_sf)
+```
+
+```{r}
+library(tmap)
+library(leaflet)
+```
+
+I use `tmap` to draw the interactive map which adds all of the variables' coefficients layer. Different categories of variables are visualized in different palettes. The yellow circles' sizes represent the rate of S&S.
+
+It's interesting that the coefficients of ethnicity variables share **similar** spatial distribution where the influence Increases from west to east while the coefficients of age variables is the opposite. The Male group and the group aged 18-24's coefficients which are largest decrease from south to north. As for the IMD indices, the magnitudes and directions of variation of coefficients shows **a great difference**, complementing each other in the measurement of London's spatial inequality.
+
+```{r fig.width=12, fig.height=8, echo=FALSE, include=TRUE}
+tmap_mode("view") 
+
+# Generate color vectors using the viridis package
+  # Ethnic
+palette1 <- viridis(n = 100, option = "magma", direction = -1)
+  # Age range
+palette2 <- viridis(n = 100, option = "viridis", direction = -1)
+  # Sex
+palette3 <- viridis(n = 100, option = "mako", direction = -1)
+  # Spatial Inequality
+palette4 <- c('#ca0020','#f4a582','#ffffff','#bababa','#404040')
+
+SS_factors_gwr_map <- 
+# Identity Structure
+                      tm_shape(Asian_prop) +
+                        tm_polygons(col = "Asian_prop", style = "cont", 
+                                    palette = palette1, 
+                                    alpha = 0.7, title = "Black_prop Coef") +
+                      tm_shape(Black_prop) +
+                        tm_polygons(col = "Black_prop", style = "cont", 
+                                    palette = palette1, 
+                                    alpha = 0.7, title = "Asian_prop Coef") +
+                      tm_shape(White_prop) +
+                        tm_polygons(col = "White_prop", style = "cont", 
+                                    palette = palette1, 
+                                    alpha = 0.7, title = "White_prop Coef") +
+                      tm_shape(under_10_prop) +
+                        tm_polygons(col = "under_10_prop", style = "cont", 
+                                    palette = palette2, 
+                                    alpha = 0.7, title = "Age_under_10_prop Coef") +
+                      tm_shape(X10.17_prop) +
+                        tm_polygons(col = "X10.17_prop", style = "cont", 
+                                  palette = palette2, 
+                                  alpha = 0.7, title = "Age_10-17_prop Coef") +
+
+                      tm_shape(X18.24_prop) +
+                        tm_polygons(col = "X18.24_prop", style = "cont", 
+                                  palette = palette2, 
+                                  alpha = 0.7, title = "Age_18-24_prop Coef") +
+
+                      tm_shape(X25.34_prop) +
+                        tm_polygons(col = "X25.34_prop", style = "cont", 
+                                  palette = palette2, 
+                                  alpha = 0.7, title = "Age_25-34_prop Coef") +
+  
+                      tm_shape(Male_prop) +
+                        tm_polygons(col = "Male_prop", style = "cont", 
+                                  palette = palette3, 
+                                  alpha = 0.7, title = "Male_prop Coef") +
+
+# Spatial Inequality
+                      tm_shape(Income_IMD) +
+                        tm_polygons(col = "Income_IMD", style = "cont", 
+                                  palette = palette4, 
+                                  alpha = 0.7, title = "Income_IMD Coef") +
+                      tm_basemap("Esri.WorldTopoMap") +
+  
+                      tm_shape(Employ_IMD) +
+                        tm_polygons(col = "Employ_IMD", style = "cont", 
+                                    palette = palette4, 
+                                    alpha = 0.7, title = "Employ_IMD Coef") +
+                      tm_shape(Education_IMD) +
+                        tm_polygons(col = "Education_IMD", style = "cont", 
+                                  palette = palette4, 
+                                  alpha = 0.7, title = "Education_IMD Coef") +
+
+                      tm_shape(Health_IMD) +
+                        tm_polygons(col = "Health_IMD", style = "cont", 
+                                  palette = palette4, 
+                                  alpha = 0.7, title = "Health_IMD Coef") +
+
+                      tm_shape(Crime_IMD) +
+                        tm_polygons(col = "Crime_IMD", style = "cont", 
+                                  palette = palette4, 
+                                  alpha = 0.7, title = "Crime_IMD Coef") +
+  
+                      tm_shape(Housing_IMD) +
+                        tm_polygons(col = "Housing_IMD", style = "cont", 
+                                  palette = palette4, 
+                                  alpha = 0.7, title = "Housing_IMD Coef") +
+
+                      tm_shape(Living_IMD) +
+                        tm_polygons(col = "Living_IMD", style = "cont", 
+                                  palette = palette4, 
+                                  alpha = 0.7, title = "Living_IMD Coef") +
+                      tm_shape(SS_gwr_coef) +
+                          tm_borders(col="black",
+                                     alpha = 0.9) +
+                      tm_shape(London_LAD_sf) +
+                            tm_dots(col = "#ffe382",
+                                    size = "S_S_prop",
+                                    border.col = NA,
+                                    scale = 1.5,
+                                    alpha = 0.7) +
+                      tm_basemap("Esri.WorldTopoMap") +
+  
+                      tm_layout(title = "GWR Model Coefficients for S&S Factors",
+                              title.position = c("center", "top"),
+                              title.size = 15,
+                              legend.width = 0.01, 
+                              legend.height = 0.01)
+SS_factors_gwr_map
+
+```
+
+## 3.3 Neighborhood Priority
+
+### 3.3.1 Neighborhood Information
+
+- get neighborhood list and neighborhood boundaries
+
+- generate spatial boundaries from coordinates
+
+```{r eval=FALSE}
+
+# I get the lists of neighborhoods of different police force areas according to the Police Force Area list in Greater London, containing Metropolitan and City of London. The total number of neighborhoods in Greater London is 680.
+
+London_neighborhoods_tibble <- tibble()
+
+for (PFA in London_PFAs){
+    # Get the url of neighborhood from different PFA
+    neighborhood_url <- sprintf("https://data.police.uk/api/%s/neighbourhoods", PFA)
+    r <- GET(neighborhood_url)
+    neighborhood_json <- httr::content(r, "parsed")     # parse the content returned from our GET request
+
+    # Use lapply() to append the PFA id to the corresponding neighborhood
+    neighborhood_json <- lapply(neighborhood_json, function(x) {
+      x$PFA_name <- PFA
+      return(x)
+    })
+
+    neighborhood_list <- lapply(neighborhood_json, unlist)
+    
+    # use lapply to convert each element to data.frame, then use do.call rbind together as tibble
+    neighborhood_tibble <- neighborhood_list %>% 
+    lapply(function(x) as.data.frame(t(as.data.frame(x)))) %>% 
+    do.call(rbind, .) %>% 
+    as_tibble()
+
+    # rename the column name
+    neighborhood_tibble <- neighborhood_tibble %>% 
+       rename(neigh_id = id, neigh_name = name)
+
+    # combine the neighborhood from all PFAs
+    London_neighborhoods_tibble <- rbind(London_neighborhoods_tibble, neighborhood_tibble)
+}
+
+```
+
+```{r eval=FALSE}
+# Join the corresponding police force to the neighborhood
+force_tibble <- force_list %>% 
+lapply(function(x) as.data.frame(t(as.data.frame(x)))) %>% 
+do.call(rbind, .) %>% 
+as_tibble()
+
+London_neighborhoods_tibble$force <- NA
+
+for (PFA in London_PFAs){
+    # Assign the value according to the correspondence of  PFA and police force 
+    London_neighborhoods_tibble[London_neighborhoods_tibble$PFA_name == PFA, "force"] <- 
+      force_tibble[force_tibble$id == PFA, "name"]
+}
+```
+
+```{r eval=FALSE}
+# Convert the negihborhoods'coordinates data into the geometry format needed by simple feature
+# Create a new `geometry` column in the tibble
+London_neighborhoods_tibble$geometry <- NA
+
+for (neigh_id in London_neighborhoods_tibble$neigh_id){
+    PFA <- London_neighborhoods_tibble[London_neighborhoods_tibble$neigh_id == neigh_id, "PFA_name"][[1]]
+    neigh_boundary_url <- sprintf("https://data.police.uk/api/%s/%s/boundary", PFA, neigh_id)
+    r <- GET(neigh_boundary_url)
+    neigh_boundary_json <- httr::content(r, "parsed")     # parse the content returned from our GET request
+
+    # Convert the coordinates of the neighborhood boundary into POLYGON data format of simple feature
+      # First remove the nested list
+    neigh_boundary_list <- neigh_boundary_json %>% lapply(unlist) %>% 
+      # Secondly remove the name of the vector and convert it into pure numeric
+    lapply(unname) %>% lapply(as.numeric) %>% 
+      # Convert the list into a matrix with the first column as latitude, the second column as longitude, and finally convert the entire list into a list
+    do.call(rbind, .) %>% list()
+
+    # exchange the order of latitude and longitude coordinates in the list
+    neigh_boundary_list[[1]] <- neigh_boundary_list[[1]][, c(2, 1)]
+    
+    # Create a simple polygon and convert it to a special type `sfc` used to store geometric information, which is suitable for embedding into a tibble or data.frame
+    neigh_boundary_polygon <- neigh_boundary_list %>% st_polygon() %>% st_sfc()
+    London_neighborhoods_tibble[London_neighborhoods_tibble$neigh_id == neigh_id, "geometry"][[1]] <- neigh_boundary_polygon
+}
+
+London_neighborhoods_tibble
+```
+
+```{r echo=FALSE}
+# saveRDS(London_neighborhoods_tibble, "RDS_data/London_neighborhoods_tibble.rds")
+London_neighborhoods_tibble<- readRDS( "RDS_data/London_neighborhoods_tibble.rds")
+# London_neighborhoods_tibble
+```
+
+```{r}
+# convert tibble to sf object
+London_neighborhoods_sf <- st_as_sf(London_neighborhoods_tibble, sf_column_name = "geometry", crs = 4326)
+# write sf into Shapefile
+# st_write(London_neighborhoods_sf, "All_data/London_neighborhoods/London_neighborhoods_sf.shp", append = FALSE)
+```
+
+
+### 3.3.2 Neighborhood Priority
+
+**Neighborhood priorities** information can be found at [here](https://data.police.uk/docs/method/neighbourhood-priorities), providing an issue raised with the police which viewed as the priority for action to be taken and the issue date. From the issue priority we can find the type of S&S the police focus on then, which also definitely influence the bias of S&S.
+
+#### 1) Issue Texts Collection
+
+I obtained the priority text information in all years via an example request like this: https://data.police.uk/api/city-of-london/cp/priorities, it is stored with dates and issue texts.
+
+```{r eval=FALSE}
+# create a empty column to save spatial info for London_neighborhoods_tibble
+London_neighborhoods_tibble$priority_info <- NA
+
+for (neigh_id in London_neighborhoods_tibble$neigh_id){
+    PFA <- London_neighborhoods_tibble[London_neighborhoods_tibble$neigh_id == neigh_id, "PFA_name"][[1]]
+    neigh_priority_url <- sprintf("https://data.police.uk/api/%s/%s/priorities", PFA, neigh_id)
+    r <- GET(neigh_priority_url)
+    neigh_priority_json <- httr::content(r, "parsed") # parse the content returned from our GET request
+    
+    priority_info_list <- list()
+    
+    for (priority in neigh_priority_json){
+      priority_date <- priority$`issue-date`  
+      priority_info <- list(date = priority_date, issue_text = priority$issue)
+      priority_info_list <- c(priority_info_list, list(priority_info))
+    }
+    if (length(priority_info_list) != 0){
+      London_neighborhoods_tibble[London_neighborhoods_tibble$neigh_id == neigh_id, "priority_info"][[1]] <- list(priority_info_list)
+    }
+}
+
+London_neighborhoods_tibble
+```
+
+```{r echo=FALSE, include=TRUE}
+# saveRDS(London_neighborhoods_tibble, "RDS_data/London_neighborhoods_tibble_1.rds")
+London_neighborhoods_tibble<- readRDS("RDS_data/London_neighborhoods_tibble_1.rds")
+# datatable(London_neighborhoods_tibble, options = list(pageLength = 10))
+
+unlist(London_neighborhoods_tibble$priority_info[[1]])
+```
+
+```{r}
+library(quanteda)
+library(quanteda.textplots)
+library(quanteda.textstats)
+```
+
+#### 2) Texual Keywords Extraction
+
+##### ①  Text Combination 
+
+I wrote a character vector called priority_doc with all the issue texts combined into one string and the neighborhood ID as the vector name:
+
+```{r eval=FALSE}
+priority_doc <- c()
+for (neigh_id in London_neighborhoods_tibble$neigh_id){
+  issue_text_all <- c()
+  
+  neigh_priority <- London_neighborhoods_tibble[London_neighborhoods_tibble$neigh_id == neigh_id, "priority_info"][[1]]
+  
+  for (priority_date in neigh_priority[[1]]){
+    issue_text <- priority_date$issue_text
+    issue_text_all <- c(issue_text_all, issue_text)
+  }
+  neigh_combined_text <- paste(issue_text_all, collapse = " ")
+  names(neigh_combined_text) <- neigh_id
+  priority_doc <- c(priority_doc, neigh_combined_text)
+}
+
+head(priority_doc, n = 2L)
+```
+
+```{r echo=FALSE, include=TRUE}
+# saveRDS(priority_doc, "RDS_data/priority_doc.rds")
+priority_doc <- readRDS("RDS_data/priority_doc.rds")
+# writeLines(priority_doc, "priority_doc.txt")
+head(priority_doc, n = 2L)
+```
+
+##### ② Tokenization and Cleaning
+
+- create document-featured matrix for issue texts of each neighborhood
+
+```{r}
+priority_docvars <- London_neighborhoods_tibble %>% dplyr::select(neigh_id, neigh_name, PFA_name, force) %>%
+                    mutate(characters = str_count(priority_doc)) %>% 
+                    as.data.frame()
+
+priority_corpus <- corpus(priority_doc,
+                       docvars = priority_docvars)
+
+priority_corpus                      
+head(docvars(priority_corpus), n = 2L)
+```
+
+- use `tokens_remove` for textual cleaning and extract wordstem
+```{r}
+# transform corpus to document-feature matrix
+text_mining <- function(corpus) {
+  
+    corpus_token <- corpus %>% 
+    tokens(remove_punct = TRUE, remove_numbers = TRUE) %>%
+    tokens_remove(stopwords("en")) %>%  # remove usual unnecessary words in English
+# Whole Word Matching
+      # Remove tokens that do not contain letters (pure numbers, etc.)
+    tokens_remove(pattern = "\\b[^a-zA-Z]+\\b", valuetype = "regex") %>%  
+      # Remove tokens containing numbers, regardless of position
+    tokens_remove(pattern = "[0-9]+", valuetype = "regex") %>%  
+      # Remove tokens containing non-word characters at the beginning and end, such as "-", "@"
+    tokens_remove(pattern = "^\\W+|\\W+$", valuetype = "regex") %>% 
+      # Remove tokens containing Chinese characters
+    tokens_remove(pattern = "[\\u4E00-\\u9FFF]", valuetype = "regex") %>% 
+      # Remove tokens consisting of 1 or 2 letters, which are generally not content words
+    tokens_remove(pattern = "\\b[a-zA-Z]{1,2}\\b", valuetype = "regex") %>%  
+    tokens_tolower()
+    # steming the word to the basic form, like running and ran <- run
+    corpus_token_stemed <- tokens_wordstem(corpus_token) 
+    dfm <- corpus_token_stemed %>% dfm() %>% dfm_trim(min_termfreq = 5) # deletes all terms which are not in the corpus at least fifth, so that we can filter some address or people names
+    result <- list(dfm, corpus_token, corpus_token_stemed)
+    return(result)
+}
+   
+```
+
+```{r eval=FALSE}
+# Get dfm, tokens and stemmed tokens for all neighborhoods of all years 
+result_all <- text_mining(priority_corpus)
+priority_dfm <- result_all[[1]]
+priority_token <- result_all[[2]]
+priority_token_stemed <- result_all[[3]]
+
+priority_dfm
+```
+
+```{r echo=FALSE}
+# saveRDS(priority_token, "RDS_data/priority_token.rds")
+priority_token<- readRDS("RDS_data/priority_token.rds")
+
+# saveRDS(priority_token_stemed, "RDS_data/priority_token_stemed.rds")
+priority_token_stemed<- readRDS("RDS_data/priority_token_stemed.rds")
+
+# saveRDS(priority_dfm, "RDS_data/priority_dfm.rds")
+priority_dfm<- readRDS("RDS_data/priority_dfm.rds")
+priority_dfm
+```
+
+```{r eval=FALSE}
+priority_dfm_df <- convert(priority_dfm, to = "data.frame")
+# Transpose matrix
+priority_dfm_mat <- t(priority_dfm_df)
+col_names <- priority_dfm_T[1, ]
+priority_dfm_df_T <- as.data.frame(priority_dfm_mat)
+colnames(priority_dfm_df_T) <- col_names
+priority_dfm_df_T <- priority_dfm_df_T[-1, ]
+# Write data frame into csv
+write.csv(priority_dfm_df_T, "priority_dfm_T.csv", row.names = TRUE)
+```
+
+- create a lookup table to search for which original words share the same stem
+```{r}
+wordstem_lookup <- function(token, token_stemed){
+  
+  df_stemmed <- data.frame(original = unlist(token), 
+                           stemmed = unlist(token_stemed))
+  # keep only unique mappings
+  df_unique <- df_stemmed[!duplicated(df_stemmed$original), ]
+  
+  # 创建一个查找表，根据stemmed列的值合并original列的值，并以逗号分隔：
+  wordstem_lookup <- df_unique %>% 
+    group_by(stemmed) %>%
+    summarise(combined = toString(unique(original)))
+  
+  return(wordstem_lookup)
+}
+
+```
+
+```{r eval=FALSE}
+wordstem_lookup_list <- wordstem_lookup(priority_token, priority_token_stemed)
+wordstem_lookup_list
+```
+
+```{r echo=FALSE}
+# saveRDS(wordstem_lookup_list, "RDS_data/wordstem_lookup_list.rds")
+wordstem_lookup_list<- readRDS("RDS_data/wordstem_lookup_list.rds")
+# datatable(wordstem_lookup_list, options = list(pageLength = 10))
+```
+
+```{r eval=FALSE}
+# wordstem_lookup
+write.csv(wordstem_lookup, "wordstem_lookup.csv", row.names = FALSE)
+```
+
+##### ③ Piority Keywords Definition
+
+By observing the classification of object of search, three subject words are extracted: **Drug**, **Theft** and **Anti-social Behaviour (ASB)**. I converted dfm into dataframe, stored and read it carefully to extract those keywords that highly related to three subject words.
+
+```{r include=TRUE}
+# create a dictionary to store these keywords
+crime_keywords <- dictionary(list(ASB_keywords = c('violenc','damag','harass','distract', 'fight', 'combat', 'assault', 'graffiti', 'tension','speed','aggress', 'weapon', 'gang', 'knife', 'firework', 'children', 'women', 'girl', 'youth', 'femal', 'sexual', 'drinker', 'beggar'),
+# P.S. speed: excess speed
+                              
+                              Drug_keywords = c('drug', 'deal', 'dealer', 'misus', 'abuse', 'cannabi', "nox", 'nitrous', 'oxid', 'substanc'),
+# P.S. misus: misuse; NOx, oxid, nitrous: nitric oxide; canist: substanc: controlled substances(refer to drug)
+                              
+                              Theft_keywords = c('theft', 'steal', 'burglari', 'stolen', 'snatch', 'pickpocket', 'shoplift', 'fraud','tfmv', 'catalyt', 'bike', 'bicycl', 'keyless', 'parcel')))
+# P.S. tfmv: theft from motor vehicles; Catalytic convertor theft
+```
+
+
+```{r}
+# Count the keywords in the neighborhood issue texts for all years and convert them into tibble
+priority_type <- priority_dfm %>% dfm_lookup(dictionary = crime_keywords) %>% 
+                                     convert(to = "data.frame") %>% as_tibble()
+```
+
+### 3.3.3 Potential Bias Analysis
+
+#### 1) Priority and Different S&S Bivariate Map
+
+A bivariate map represents **two different variables** within a single visual display to provide a more comprehensive understanding of how these variables **interact** or correlate with each other in a geographic space. 
+
+- Classify three types of s&s according to `object_of_search`
+
+```{r eval=FALSE}
+# The S&S type of S&S data is classified according to the value of column 'object_of_search' and stored in the column 'S_S_type'. It is further divided into three data according to S&S type to facilitate following analysis.
+
+for (object in London_SS_sf$object_of_search) {
+  if (object == "Controlled drugs") {
+    London_SS_sf[London_SS_sf$object_of_search == object, "S_S_type"] <- "Drug"
+  } else if (object == "Stolen goods") {
+    London_SS_sf[London_SS_sf$object_of_search == object, "S_S_type"] <- "Theft"
+  } else {
+    London_SS_sf[London_SS_sf$object_of_search == object, "S_S_type"] <- "ASB"  # Anti-social Behaviour
+  }
+}
+
+London_SS_ASB <- London_SS_sf %>% filter(S_S_type == "ASB") # 1805
+                 
+  
+London_SS_Drug <- London_SS_sf %>% filter(S_S_type == "Drug") # 3794
+
+London_SS_Theft <- London_SS_sf %>% filter(S_S_type == "Theft") # 1037
+```
+
+```{r echo=FALSE, paged.print=TRUE}
+# saveRDS(London_SS_ASB, "RDS_data/London_SS_ASB.rds")
+London_SS_ASB <- readRDS("RDS_data/London_SS_ASB.rds")
+
+# saveRDS(London_SS_Drug, "RDS_data/London_SS_Drug.rds")
+London_SS_Drug <- readRDS("RDS_data/London_SS_Drug.rds")
+
+# saveRDS(London_SS_Theft, "RDS_data/London_SS_Theft.rds")
+London_SS_Theft <- readRDS("RDS_data/London_SS_Theft.rds")
+```
+
+- Calculate the relationship between S&S type and priority by `bi_class()`
+
+```{r eval=FALSE, include=FALSE}
+# download the neighborhood boundary data generated before
+London_neighborhoods_sf <- read_sf(paste0(path_to_folder,"/All_data/London_neighborhoods/London_neighborhoods_sf.shp"))
+```
+
+```{r eval=FALSE}
+  # left join the specific S&S type data (e.g. London_ASB_type) to the London_neighborhoods_sf with all information
+neigh_spatial_join <- function(London_SS_type, type){
+  neigh_SS_type <- London_neighborhoods_sf %>%
+                st_join(London_SS_type, left = FALSE) %>%   
+                group_by(neigh_id) %>%
+                summarize(SS_count = n())
+  
+ # for loop the neigh_id of London_neighborhoods_sf, if the id of specific S&S type data is inside, create first time and update the specific column every time. Otherwise update the value with 0  
+  for (neigh_ID in London_neighborhoods_sf$neigh_id){
+    if (neigh_ID %in% neigh_SS_type$neigh_id){
+      London_neighborhoods_sf[London_neighborhoods_sf$neigh_id == neigh_ID, 
+                              sprintf("SS_%s_count", type)] <- 
+        neigh_SS_type[neigh_SS_type$neigh_id == neigh_ID, "SS_count"][[1]]
+    }
+    else{London_neighborhoods_sf[London_neighborhoods_sf$neigh_id == neigh_ID, 
+                                 sprintf("SS_%s_count", type)] <- 0}
+  }
+  return(London_neighborhoods_sf)
+}
+
+# update the type of S&S in London_neighborhoods_sf by setting a parameter
+London_neighborhoods_sf <- neigh_spatial_join(London_SS_ASB, "ASB")
+London_neighborhoods_sf <- neigh_spatial_join(London_SS_Drug, "Drug")
+London_neighborhoods_sf <- neigh_spatial_join(London_SS_Theft, "Theft")
+London_neighborhoods_sf
+```
+
+```{r echo=FALSE, paged.print=TRUE}
+# saveRDS(London_neighborhoods_sf, "RDS_data/London_neighborhoods_sf.rds")
+London_neighborhoods_sf <- readRDS("RDS_data/London_neighborhoods_sf.rds")
+# datatable(London_neighborhoods_sf, options = list(pageLength = 10))
+```
+
+```{r eval=FALSE}
+# first transform into dataframe to for table joining, then connect neighborhood priority and London_neighborhoods_sf with different types of s&s counts
+London_neighborhoods_sf <- London_neighborhoods_sf %>% as.data.frame() %>% 
+                           inner_join(priority_type, by = c("neigh_id" = "doc_id")) %>% 
+# calculate the bi_class of three S&S types separately
+                           bi_class(x = SS_ASB_count, 
+                                    y = ASB_keywords, 
+                                    style = "jenks", dim = 3) %>%   
+                           rename("ASB_bi_class" = "bi_class") %>% 
+
+                           bi_class(x = SS_Drug_count, 
+                                    y = Drug_keywords, 
+                                    style = "jenks", dim = 3) %>%
+                           rename("Drug_bi_class" = "bi_class") %>% 
+
+
+                           bi_class(x = SS_Theft_count, 
+                                    y = Theft_keywords, 
+                                    style = "jenks", dim = 3) %>%
+                           rename("Theft_bi_class" = "bi_class") %>%
+# transform back to sf
+                           st_as_sf(sf_column_name = "geometry", crs = st_crs(4326))
+  
+```
+
+```{r echo=FALSE}
+# saveRDS(London_neighborhoods_sf, "RDS_data/London_neighborhoods_sf1.rds")
+London_neighborhoods_sf <- readRDS("RDS_data/London_neighborhoods_sf1.rds")
+```
+
+- Plot the bivariate map side by side
+
+The following bivariate map shows how three types of S&S interact with the neighborhood priority in all years (can view this as each neighborhood's main issues in a specific social and culture background). It shows that although most of neighborhoods are colored in blue which means they don't co-exist, there're still some neighborhoods in brown especially in the city center with close relationship between S&S actions and priorities.
+
+```{r}
+library(biscale)
+```
+
+```{r fig.height=12, fig.width=15}
+
+Bivariate_map_plot <- function(title, legend_loc, fill_layer){
+  Bivariate_map <- 
+  London_basemap_plot +
+  labs(x ='', y ='', title = title) +
+  geom_sf(data = London_neighborhoods_sf, inherit.aes = FALSE, aes(fill = fill_layer), color = 'black', size = 1.5, alpha = 1) +
+  coord_sf(xlim = London_plot_bbox[c(1,3)], ylim = London_plot_bbox[c(2,4)]) +
+  theme(plot.title = element_text(size =35, hjust = 0.5, vjust = 1, face = "bold"),
+        plot.margin = margin(t = 0.6, r = -12, 
+                             b = 0, l = -12.5, "cm"),
+        legend.title = element_text(size = 25, face ='bold'),
+        legend.position = legend_loc,
+        legend.key.size = unit(1.2, "cm"),
+        legend.text = element_text(size = 22),
+        legend.margin = margin(0, 2, 0, 2, "cm"),
+        line = element_blank(), 
+        rect = element_blank(), 
+        axis.text=element_blank(),
+        axis.title=element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+        annotation_scale(location = "bl", line_width = 0.2,
+                         pad_x = unit(0.025, "npc"), pad_y = unit(0.03, "npc"), 
+                         height = unit(0.32, "cm"), text_cex = 1.5) + 
+        annotation_north_arrow(location = "bl", which_north = "true", 
+                               pad_x = unit(0.08, "npc"), pad_y = unit(0.08, "npc"),
+                               height = unit(2, "cm"), width = unit(1.5, "cm"))
+  return(Bivariate_map)
+}
+```
+
+```{r fig.height=11, fig.width=13}
+# bi_theme()
+ASB_bivariate <- Bivariate_map_plot(title = "", legend_loc = "", fill_layer = London_neighborhoods_sf$ASB_bi_class) +
+                 bi_scale_fill(pal = "GrPink", dim = 3) + labs(caption = "(Anti-social Behavior)") +
+                 theme(plot.caption = element_text(hjust = 0.5, vjust = 1.8, size = 20))
+
+Drug_bivariate <- Bivariate_map_plot(title = "", legend_loc = "", fill_layer = London_neighborhoods_sf$Drug_bi_class) +
+                  bi_scale_fill(pal = "GrPink", dim = 3) + labs(caption = "(Controlled Drug)") +
+                  theme(plot.caption = element_text(hjust = 0.5, vjust = 1.8, size = 20))
+
+Theft_bivariate <- Bivariate_map_plot(title = "", legend_loc = "", fill_layer = London_neighborhoods_sf$Theft_bi_class) +
+                   bi_scale_fill(pal = "GrPink", dim = 3) + labs(caption = "(Theft)") +
+                   theme(plot.caption = element_text(hjust = 0.5, vjust = 1.8, size = 20))
+
+# side by side
+combined_plot_bivariate <- plot_grid(ASB_bivariate, Drug_bivariate, Theft_bivariate, ncol = 2)
+
+final_plot_bivariate <- ggdraw() +
+              draw_plot(combined_plot_bivariate) +
+              draw_label('Bivariate Map of Stop-and-Search Types and Neighborhood Priority in London', fontface = 'bold', size = 25, x = 0.5, vjust = -19, hjust = 0.5)
+
+legend <- bi_legend(pal = "GrPink",
+                    dim = 3,
+                    xlab = "Higher Neighborhood Priority",
+                    ylab = "Higher Stop-And-Search",
+                    size = 20)
+
+# combine map with legend
+final_plot_bivariate <- ggdraw() +
+  draw_plot(final_plot_bivariate, 0, 0, 1, 1) +
+  draw_plot(legend, 0.65, 0.12, 0.2, 0.2, scale = 2)  # left, bottom, right, top
+
+final_plot_bivariate
+```
+
+```{r echo=FALSE, fig.height=11, fig.width=13, include=TRUE}
+saveRDS(final_plot_bivariate, "RDS_data/final_plot_bivariate.rds")
+final_plot_bivariate <- readRDS("RDS_data/final_plot_bivariate.rds")
+final_plot_bivariate
+```
+
+#### 2) Priority Influence In Time Series
+
+- Extract the issue texts in research period
+
+```{r eval=FALSE}
+
+# doc and docvars for corpus
+priority_doc_202311 <- c()
+priority_docvars_202311 <- data_frame()
+
+for (neigh_ID in London_neighborhoods_tibble$neigh_ID){
+   # get the detailed information of neighborhoods for docvars data
+  neigh_name <- London_neighborhoods_tibble %>% dplyr::filter(neigh_ID == neigh_ID) %>% select(neigh_name) %>% pull()
+  PFA_name <- London_neighborhoods_tibble %>% dplyr::filter(neigh_ID == neigh_ID) %>% select(PFA_name) %>% pull()
+  force <- London_neighborhoods_tibble %>% dplyr::filter(neigh_ID == neigh_ID) %>% select(force) %>% pull()
+  neigh_priority <- London_neighborhoods_tibble[London_neighborhoods_tibble$neigh_ID == neigh_ID, "priority_info"][[1]]
+  
+  for (priority_date in neigh_priority[[1]]){
+
+    issue_date <- priority_date$date %>% ymd_hms()
+    # Parse datetime string and extract year and month
+    issue_ym <- format(issue_date, "%Y-%m")
+    
+    if (issue_ym == "2023-11"){
+      
+        issue_text <- priority_date$issue_text
+        
+        doc_name <- paste0(neigh_ID, "_", issue_date)
+      
+        if (doc_name %in% names(priority_doc_202311)){ 
+        # if doc_name already exist then paste the new text to the former text and update the corresponding row in priority_doc_202311
+          # combine text
+          priority_doc_202311[doc_name] <- paste(priority_doc_202311[doc_name], issue_text)
+          
+          # update the text length in priority_docvars_202311
+          priority_docvars_202311[priority_docvars_202311$neigh_ID == neigh_ID & priority_docvars_202311$priority_date == issue_date, "characters"] <- str_count(priority_doc_202311[doc_name])
+        }
+        
+        else{
+         # if doc_name doesn't exist then add a new row in priority_doc_202311
+          priority_doc_202311[doc_name] <- issue_text
+
+          neigh_date_priority_info <- data_frame("neigh_ID" = neigh_ID, 
+                                                 "neigh_name" = neigh_name,
+                                                 "priority_date" = issue_date,
+                                                 "PFA_name" = PFA_name, "force" = force,
+                                                 "characters" = str_count(priority_doc_202311[doc_name]))
+          # add this row to priority_docvars_202311
+          priority_docvars_202311 <- rbind(priority_docvars_202311, neigh_date_priority_info)
+      }
+    }
+  }
+}
+
+head(priority_doc_202311, n = 2L)
+```
+
+```{r echo=FALSE}
+# saveRDS(priority_doc_202311, "RDS_data/priority_doc_202311.rds")
+priority_doc_202311<- readRDS("RDS_data/priority_doc_202311.rds")
+head(priority_doc_202311, n = 2L)
+# saveRDS(priority_docvars_202311, "RDS_data/priority_docvars_202311.rds")
+priority_docvars_202311<- readRDS("RDS_data/priority_docvars_202311.rds")
+```
+
+- Calculate priority by keywords count
+
+```{r eval=FALSE}
+# create corpus
+priority_corpus_202311 <- corpus(priority_doc_202311,
+                       docvars = priority_docvars_202311)
+
+docvars(priority_corpus_202311)
+
+# create and clean dfm
+priority_dfm_202311 <- text_mining(priority_corpus_202311)[[1]]
+priority_dfm_202311
+
+# Check the number of neighborhoods that have S&S priority in Dec.2023: 103
+length(unique(priority_dfm_202311$neigh_id))
+```
+
+```{r echo=FALSE}
+# saveRDS(priority_dfm_202311, "RDS_data/priority_dfm_202311.rds")
+priority_dfm_202311<- readRDS("RDS_data/priority_dfm_202311.rds")
+priority_dfm_202311
+```
+
+```{r eval=FALSE}
+# convert dfm into tibble
+neigh_priority_key_202311 <- priority_dfm_202311 %>% 
+                           dfm_lookup(dictionary = crime_keywords) %>% 
+                           convert(to = "data.frame") %>% as_tibble()
+neigh_priority_key_202311
+
+# extract neigh_id and priority_date from doc_id
+neigh_id <- unlist(lapply(neigh_priority_key_202311$doc_id, 
+                          function(x) strsplit(x, "_")[[1]][1]))
+
+priority_date <- unlist(lapply(neigh_priority_key_202311$doc_id, 
+                          function(x) strsplit(x, "_")[[1]][2]))
+# convert chr to standard date format
+priority_date <- as.Date(unlist(lapply(priority_date, function(x) as.Date(x))))
+
+neigh_priority_key_202311$neigh_id <- neigh_id
+neigh_priority_key_202311$priority_date <- priority_date
+
+```
+
+```{r echo=FALSE, paged.print=TRUE}
+# saveRDS(neigh_priority_key_202311, "RDS_data/neigh_priority_key_202311.rds")
+neigh_priority_key_202311<- readRDS("RDS_data/neigh_priority_key_202311.rds")
+# datatable(neigh_priority_key_202311, options = list(pageLength = 10))
+```
+
+- Plot S&S and priority in the same time series
+```{r eval=FALSE}
+# This function is to add a column of corresponding neighborhood id for each S&S point.
+Get_SS_neigh_id <- function(points_sf, polygons_sf){
+  # use st_within() to find which neighborhood boundary each s&s point is located in
+  matched <- st_within(points_sf, polygons_sf, sparse = FALSE)
+
+  # create a new column to store polygon ID, apply a function that to each row of matched(1 means rows of a matrix)
+  points_sf$neigh_id <- apply(matched, 1, function(x) {
+    # Check if the current row (corresponding to one point) is inside any polygon
+    if (any(x)) {
+      # if yes, assign the current row value of polygons_sf$neigh_id to the corresponding value of points_sf$neigh_id
+        # which(x) return the position indices of all TRUE values of bool vector x 
+      return(polygons_sf$neigh_id[which(x)])
+      } 
+    else {return(NA)}
+    }
+  )
+  return(points_sf)
+}
+```
+
+```{r eval=FALSE}
+London_SS_ASB <- Get_SS_neigh_id(London_SS_ASB, London_neighborhoods_sf)
+London_SS_Drug <- Get_SS_neigh_id(London_SS_Drug, London_neighborhoods_sf)
+London_SS_Theft <- Get_SS_neigh_id(London_SS_Theft, London_neighborhoods_sf)
+
+# convert the datetime format into Y%-M%-D% format
+London_SS_ASB$date <- as.Date(unlist(lapply(London_SS_ASB$datetime , function(x) {
+  return(as.Date(paste0(year(x), "-", month(x), "-", day(x))))
+})))
+
+London_SS_Drug$date <- as.Date(unlist(lapply(London_SS_Drug$datetime , function(x) {
+  return(as.Date(paste0(year(x), "-", month(x), "-", day(x))))
+})))
+
+London_SS_Theft$date <- as.Date(unlist(lapply(London_SS_Theft$datetime , function(x) {
+  return(as.Date(paste0(year(x), "-", month(x), "-", day(x))))
+})))
+```
+
+```{r echo=FALSE}
+# saveRDS(London_SS_ASB, "RDS_data/London_SS_ASB.rds")
+London_SS_ASB<- readRDS("RDS_data/London_SS_ASB.rds")
+# London_SS_ASB
+
+# saveRDS(London_SS_ASB, "RDS_data/London_SS_Drug.rds")
+London_SS_Drug<- readRDS("RDS_data/London_SS_Drug.rds")
+# London_SS_Drug
+
+# saveRDS(London_SS_ASB, "RDS_data/London_SS_Theft.rds")
+London_SS_Theft<- readRDS("RDS_data/London_SS_Theft.rds")
+# London_SS_Theft
+
+```
+
+```{r paged.print=TRUE}
+# count the specific S&S type and Priority grouped by neigh_id
+# Keep the neighborhood IDs with non-zero occurrences of each theme word during the research period
+neigh_priority_ASB <- neigh_priority_key_202311 %>% select(neigh_id, ASB_keywords) %>%
+                      filter(!(ASB_keywords == 0)) %>% arrange(desc(ASB_keywords))
+# neigh_priority_ASB                         
+
+neigh_priority_Drug <- neigh_priority_key_202311 %>% select(neigh_id, Drug_keywords) %>%
+                       filter(!(Drug_keywords == 0)) %>% arrange(desc(Drug_keywords))
+# neigh_priority_Drug
+
+neigh_priority_Theft <- neigh_priority_key_202311 %>% select(neigh_id, Theft_keywords) %>%
+                        filter(!(Theft_keywords == 0)) %>% arrange(desc(Theft_keywords))
+# neigh_priority_Theft
+
+# Count the different types of S&S for each neighborhood, remove neighborhood with NA values, and sort them in descending order
+
+neigh_SS_ASB <- as_tibble(London_SS_ASB) %>% 
+                    group_by(neigh_id) %>% 
+                    summarise(ss_ASB_count = n()) %>% 
+                    filter(!(is.na(neigh_id))) %>% 
+                    arrange(desc(ss_ASB_count))
+# neigh_SS_ASB
+
+neigh_SS_Drug <- as_tibble(London_SS_Drug) %>% 
+                    group_by(neigh_id) %>% 
+                    summarise(ss_Drug_count = n()) %>% 
+                    filter(!(is.na(neigh_id))) %>% 
+                    arrange(desc(ss_Drug_count))
+# neigh_SS_Drug
+
+neigh_SS_Theft <- as_tibble(London_SS_Theft) %>% 
+                    group_by(neigh_id) %>% 
+                    summarise(ss_Theft_count = n()) %>% 
+                    filter(!(is.na(neigh_id))) %>% 
+                    arrange(desc(ss_Theft_count))
+# neigh_SS_Theft
+```
+
+```{r}
+# count the specific S&S type and Priority grouped by both neigh_id and date
+ # S&S
+neigh_date_SS_ASB <- as_tibble(London_SS_ASB) %>% group_by(neigh_id, date) %>% summarise(ss_ASB_count = n())
+# neigh_date_SS_ASB
+
+neigh_date_SS_Drug <- as_tibble(London_SS_Drug) %>% group_by(neigh_id, date) %>% summarise(ss_Drug_count = n())
+# neigh_date_SS_Drug
+
+neigh_date_SS_Theft <- as_tibble(London_SS_Theft) %>% group_by(neigh_id, date) %>% summarise(ss_Theft_count = n())
+# neigh_date_SS_Theft
+
+ # Priority
+neigh_date_priority_ASB <- neigh_priority_key_202311 %>% group_by(neigh_id, priority_date) %>% summarise(keyword_ASB_count = sum(ASB_keywords))
+neigh_date_priority_ASB
+
+neigh_date_priority_Drug <- neigh_priority_key_202311 %>% group_by(neigh_id, priority_date) %>% summarise(keyword_Drug_count = sum(Drug_keywords))
+neigh_date_priority_Drug
+
+neigh_date_priority_Theft <- neigh_priority_key_202311 %>% group_by(neigh_id, priority_date) %>% summarise(keyword_Theft_count = sum(Theft_keywords))
+neigh_date_priority_Theft
+```
+
+```{r}
+# - This function is to search for certain neighborhood which has same type S&S and priority in 2023.11
+Get_SS_time_series <- function(neigh_date_SS_type, neigh_date_priority_type){
+  # ① find those neighborhoods which has specific type of S&S and priority at the same time
+  neigh_id_ss_priority <- intersect(unique(neigh_date_SS_type$neigh_id), unique(neigh_date_priority_type$neigh_id))
+  
+  # ② create a date data sequence from 2023-11-01 to 2023-11-30
+  dates_nov_2023 <- unlist(seq(from = as.Date("2023-11-01"), to = as.Date("2023-11-30"), by = "day"))
+  
+  # ③ create a tibble with each date in Dec as a row for each neighborhood 
+  ss_priority_type <- as_tibble_col(neigh_id_ss_priority, column_name = "neigh_id") %>% crossing(date = dates_nov_2023)
+  
+  # ④ left_join() keeps all observations in ss_priority_type, if matched, get the S&S data, else remain NA
+  ss_priority_type <- left_join(ss_priority_type, neigh_date_SS_type, by = c("neigh_id" = "neigh_id", "date" = "date")) 
+  ss_priority_type <- left_join(ss_priority_type, neigh_date_priority_type, by = c("neigh_id" = "neigh_id", "date" = "priority_date"))
+  
+  # ⑤ convert all NA to 0
+  ss_priority_type <- ss_priority_type %>%
+                      mutate(across(everything(), ~ replace_na(., 0)))
+  
+  # ⑥ add neighborhood names to the tibble
+  neigh_id_name <- London_neighborhoods_tibble %>% select(neigh_id, neigh_name)
+  ss_priority_type <- left_join(ss_priority_type, neigh_id_name, by = c("neigh_id" = "neigh_id")) 
+  
+  return(ss_priority_type)
+}
+```
+
+```{r}
+ss_priority_ASB <- Get_SS_time_series(neigh_date_SS_ASB, neigh_date_priority_ASB)
+ss_priority_ASB
+
+ss_priority_Drug <- Get_SS_time_series(neigh_date_SS_Drug, neigh_date_priority_Drug)
+ss_priority_Drug
+
+ss_priority_Theft <- Get_SS_time_series(neigh_date_SS_Theft, neigh_date_priority_Theft)
+ss_priority_Theft
+```
+
+```{r}
+# saveRDS(ss_priority_ASB, "RDS_data/ss_priority_ASB.rds")
+ss_priority_ASB<- readRDS("RDS_data/ss_priority_ASB.rds")
+# ss_priority_ASB
+
+# saveRDS(ss_priority_Drug, "RDS_data/ss_priority_Drug.rds")
+ss_priority_Drug<- readRDS("RDS_data/ss_priority_Drug.rds")
+# ss_priority_Drug
+
+# saveRDS(ss_priority_Theft, "RDS_data/ss_priority_Theft.rds")
+ss_priority_Theft<- readRDS("RDS_data/ss_priority_Theft.rds")
+# ss_priority_Theft
+```
+
+```{r}
+outlier <- ss_priority_ASB %>% filter(neigh_id == "E05013806N")
+
+# remove one outlier
+ss_priority_ASB <- ss_priority_ASB %>% filter(!(neigh_id == "E05013806N"))
+```
+
+```{r}
+ss_priority_ASB_subset <- ss_priority_ASB[c(1:30, 91:120, 121:150, 181:210, 241:270), ]
+
+ss_priority_Drug_subset <- ss_priority_Drug[c((10*30+1):(11*30), (13*30+1):(14*30), (14*30+1):(15*30), (15*30+1):(16*30), (16*30+1):(17*30)), ]
+
+ss_priority_Theft_subset <- ss_priority_Theft[c((34*30+1):(35*30), (42*30+1):(43*30), (47*30+1):(48*30), (44*30+1):(45*30), (45*30+1):(46*30)), ]
+```
+
+```{r}
+library(scales) 
+```
+
+```{r}
+# set the timezone
+Sys.setlocale("LC_TIME", "en_US.UTF-8")
+```
+
+The figure below shows the **temporal co-occurrence** relationship between neighborhood priority and S&S in some neighborhoods during the study period. The lines represents the time series of S&S, the dots represent the time points when neighborhood priority appears, and the size represents the number of occurrences.
+
+As shown in the figure, neighborhood priority has a greater impact on the increase in S&S in the short term.
+
+```{r eval=FALSE, fig.height=5, fig.width=10}
+
+Time_series_plot <- function(data, y, size, title){
+  
+  SS_linechart_type <-  
+  ggplot() +  
+  geom_line(data = data, 
+            aes(x = date,
+                y = y,
+                color = neigh_name),
+            linewidth = 1) +
+  scale_x_date(labels = date_format("%b %d")) + # date formatting
+  geom_point(data = data,
+             aes(x = date,
+                 y = y,
+                 color = neigh_name,
+                 size = size)) +
+  # scale_color_viridis(option = "turbo", direction = -1, discrete = TRUE) +
+  scale_color_manual(values = c("#647d87", "#f6d776", "#df826c","#5f6f52", "#61a3ba")) +
+  labs(title = sprintf("Relationship between S&S and Priority for %s in time series", title), 
+       x = "Date", 
+       y = "The number of S&S") + 
+  theme(
+      rect = element_blank(), # remove background
+      plot.title = element_text(size =18, hjust =0.5, vjust = 0.5),
+      legend.position = "right",
+      strip.text = element_text(size = 10), 
+      panel.spacing = unit(1, "lines"),
+      panel.border = element_rect(colour = "black", fill=NA, linewidth=0.5),
+      # legend.position = "",
+      legend.background = element_blank(),
+      legend.key = element_rect(fill = "transparent"),
+      legend.key.size = unit(0.5, "cm"),
+      legend.title = element_text(size = 15),
+      legend.text = element_text(size = 12),
+      axis.text = element_text(size = 15),
+      axis.title = element_text(size = 15)
+      ) 
+
+return(SS_linechart_type)
+}
+
+```
+
+```{r eval = FALSE, fig.height=15, fig.width=10}
+ss_priority_ASB_plot <- Time_series_plot(data = ss_priority_ASB_subset,
+                                           y = ss_priority_ASB_subset$ss_ASB_count,
+                                           size = ss_priority_ASB_subset$keyword_ASB_count,
+                                           title = "ASB")
+
+ss_priority_Drug_plot <- Time_series_plot(data = ss_priority_Drug_subset,
+                                           y = ss_priority_Drug_subset$ss_Drug_count,
+                                           size = ss_priority_Drug_subset$keyword_Drug_count,
+                                           title = "Drug")
+
+ss_priority_Theft_plot <- Time_series_plot(data = ss_priority_Theft_subset,
+                                           y = ss_priority_Theft_subset$ss_Theft_count,
+                                           size = ss_priority_Theft_subset$keyword_Theft_count,
+                                           title = "Theft")
+
+final_ss_priority_plot <- plot_grid(ss_priority_ASB_plot, ss_priority_Drug_plot, ss_priority_Theft_plot, ncol = 1)
+final_ss_priority_plot
+```
+
+```{r fig.height=15, fig.width=10, include=TRUE, echo=FALSE}
+# saveRDS(final_ss_priority_plot, "RDS_data/final_ss_priority_plot.rds")
+final_ss_priority_plot<- readRDS("RDS_data/final_ss_priority_plot.rds")
+final_ss_priority_plot
+```
+
+# 4 Conclusion
+
+① **Identitiy Prejutice**：After focusing on the misclassified S&S data, **from an individual perspective**, in addition to the influence of gender and age group, there's exactly a racial bias for blacks and other groups in terms of the disproportionality. **From an regional perspective**, the proportion of the white group have a key role in the reduction of local S&S rates.
+
+② **Spatial Inequality**：The inclusion of 7 IMD indices measuring spatial inequality from different dimensions boosts the regression fit with the identity features only, suggesting that the effect of spatial inequality on local miscjudged S&S rates cannot be ignored. The results from GWR further reveal the **spatial heterogeneity** in terms of the impact of these variables on S&S.
+
+③ **Neighborhood Priority**：Through textual analysis and keyword extraction of Poiice Priority in the neighborhood and its correlation with S&S incidence in both spatial and temporal dimensions, it was found that neighborhood preference in many cases directly leads to a surge in the number of S&S (behind which may mean more misjudgment and prejudice). Thus, future research at a finer scale could also incorporate indicators such as Poice priority, or even police force and neighborhood crime perception.
+
+# 5 Code Appendix
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE, include = TRUE} 
+# this chunk generates the complete code appendix. 
+```
